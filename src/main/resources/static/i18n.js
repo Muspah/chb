@@ -208,6 +208,10 @@ const translations = {
     "report.filterPlaceholder": "Filter by name…",
     "report.loadMore": "Load more",
     "report.stats": "{reviewed} of {total} quays handled ({pct}%): {grouped} grouped, {standalone} OK as standalone stop. Worklist: {remaining} stops to review.",
+
+    "toolbar.duplicateNames": "Duplicate names",
+    "duplicateNames.hint": "Names carried by both a reviewed and an unreviewed stop — the unreviewed ones may have been missed.",
+    "duplicateNames.group": "{name} ({reviewed} reviewed)",
   },
 
   nl: {
@@ -335,6 +339,10 @@ const translations = {
     "report.filterPlaceholder": "Filter op naam…",
     "report.loadMore": "Meer laden",
     "report.stats": "{reviewed} van {total} quays afgehandeld ({pct}%): {grouped} gegroepeerd, {standalone} akkoord als losse halte. Werkvoorraad: nog {remaining} haltes te bekijken.",
+
+    "toolbar.duplicateNames": "Gelijknamige haltes",
+    "duplicateNames.hint": "Namen die zowel bij een nagekeken als bij een nog niet nagekeken halte horen — de niet-nagekeken exemplaren zijn mogelijk gemist.",
+    "duplicateNames.group": "{name} ({reviewed} nagekeken)",
   },
 
   de: {
@@ -462,6 +470,10 @@ const translations = {
     "report.filterPlaceholder": "Nach Name filtern…",
     "report.loadMore": "Mehr laden",
     "report.stats": "{reviewed} von {total} Quays erledigt ({pct}%): {grouped} gruppiert, {standalone} als Einzelhalt in Ordnung. Arbeitsvorrat: noch {remaining} Haltestellen zu prüfen.",
+
+    "toolbar.duplicateNames": "Gleichnamige Haltestellen",
+    "duplicateNames.hint": "Namen, die sowohl zu einer geprüften als auch zu einer ungeprüften Haltestelle gehören — die ungeprüften könnten übersehen worden sein.",
+    "duplicateNames.group": "{name} ({reviewed} geprüft)",
   },
 
   fr: {
@@ -589,6 +601,10 @@ const translations = {
     "report.filterPlaceholder": "Filtrer par nom…",
     "report.loadMore": "Charger plus",
     "report.stats": "{reviewed} quais traités sur {total} ({pct} %) : {grouped} regroupés, {standalone} validés comme arrêt isolé. À traiter : {remaining} arrêts.",
+
+    "toolbar.duplicateNames": "Arrêts homonymes",
+    "duplicateNames.hint": "Noms portés à la fois par un arrêt vérifié et un arrêt non vérifié — ce dernier a peut-être été oublié.",
+    "duplicateNames.group": "{name} ({reviewed} vérifié(s))",
   },
 };
 

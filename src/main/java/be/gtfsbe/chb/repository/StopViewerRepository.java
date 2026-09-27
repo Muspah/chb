@@ -1,5 +1,6 @@
 package be.gtfsbe.chb.repository;
 
+import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.GeoJsonFeature;
 import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
 import be.gtfsbe.chb.dto.GeoJsonGeometry;
@@ -18,10 +19,12 @@ import org.springframework.stereotype.Repository;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Alle leesoperaties, publiek en beveiligd, gaan via de chb_viewer-pool (build-instruction.md §5)
@@ -390,6 +393,65 @@ public class StopViewerRepository {
             (rs, rowNum) -> new UnreviewedStop(rs.getLong("id"), rs.getString("name"), rs.getString("path"),
                 rs.getString("stop_type"), rs.getBoolean("is_synthetic")),
             REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY, likePattern, limit, offset);
+    }
+
+    /**
+     * Namen die zowel een nagekeken als een niet-nagekeken StopPlace dragen — de niet-nagekeken
+     * exemplaren zijn mogelijk gemist doordat een curator de naam al bij een gelijknamige halte
+     * zag afvinken. Matcht op naam hoofdletter-/spatie-ongevoelig ({@code lower(btrim(name))}).
+     * Pagineert op groep (naam), niet op individuele rij.
+     */
+    public List<DuplicateNameGroup> findDuplicateNames(String query, int limit, int offset) {
+        String groupsSql = """
+            SELECT norm_name, min(name) AS name, reviewed_count FROM (
+                SELECT lower(btrim(s.name)) AS norm_name, s.name,
+                    count(*) FILTER (WHERE EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?))
+                        OVER (PARTITION BY lower(btrim(s.name))) AS reviewed_count,
+                    count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?))
+                        OVER (PARTITION BY lower(btrim(s.name))) AS unreviewed_count
+                FROM chb.stop s
+                WHERE s.merged_into_id IS NULL
+                AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
+            ) t
+            WHERE reviewed_count > 0 AND unreviewed_count > 0 AND norm_name ILIKE ?
+            GROUP BY norm_name, reviewed_count
+            ORDER BY name
+            LIMIT ? OFFSET ?
+            """;
+        String likePattern = "%" + (query == null ? "" : query) + "%";
+        record NameGroup(String normName, String name, long reviewedCount) {
+        }
+        List<NameGroup> groups = jdbcTemplate.query(groupsSql,
+            (rs, rowNum) -> new NameGroup(rs.getString("norm_name"), rs.getString("name"), rs.getLong("reviewed_count")),
+            REVIEWED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY, likePattern, limit, offset);
+        if (groups.isEmpty()) {
+            return List.of();
+        }
+
+        // Array-literal als tekst i.p.v. java.sql.Array — zelfde patroon als StopEditorRepository#groupStops.
+        String normNamesLiteral = groups.stream().map(NameGroup::normName)
+            .map(n -> "\"" + n.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+            .collect(Collectors.joining(",", "{", "}"));
+        String unreviewedSql = """
+            SELECT s.id, s.name, concat_ws(' > ', g.name, s.name) AS path, s.stop_type, s.is_synthetic,
+                lower(btrim(s.name)) AS norm_name
+            FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
+            WHERE s.merged_into_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
+            AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
+            AND lower(btrim(s.name)) = ANY(?::text[])
+            ORDER BY path
+            """;
+        Map<String, List<UnreviewedStop>> byNormName = new LinkedHashMap<>();
+        jdbcTemplate.query(unreviewedSql, rs -> {
+            byNormName.computeIfAbsent(rs.getString("norm_name"), k -> new ArrayList<>())
+                .add(new UnreviewedStop(rs.getLong("id"), rs.getString("name"), rs.getString("path"),
+                    rs.getString("stop_type"), rs.getBoolean("is_synthetic")));
+        }, REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY, normNamesLiteral);
+
+        return groups.stream()
+            .map(g -> new DuplicateNameGroup(g.name(), g.reviewedCount(), byNormName.getOrDefault(g.normName(), List.of())))
+            .toList();
     }
 
     public boolean exists(long id) {

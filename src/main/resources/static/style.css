@@ -781,7 +781,8 @@ button, input, select {
   box-shadow: 0 0 0 3px rgba(42, 120, 214, 0.18);
 }
 
-#report-list {
+#report-list,
+#dup-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -789,6 +790,27 @@ button, input, select {
   overflow-y: auto;
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-md);
+}
+
+.report-group {
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.report-group:last-child {
+  border-bottom: none;
+}
+
+.report-group-heading {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: var(--surface-50);
+}
+
+.report-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .report-item {

@@ -1204,6 +1204,7 @@ async function confirmMerge(pickedSourceId, pickedTargetId) {
 
 function wireReport() {
   document.getElementById("btn-report").addEventListener("click", openReportDialog);
+  document.getElementById("btn-duplicate-names").addEventListener("click", openDuplicateNamesDialog);
 }
 
 function applyUnreviewedToggleUi() {
@@ -1303,6 +1304,70 @@ async function openReportDialog() {
   document.getElementById("report-load-more").addEventListener("click", () => loadPage(false));
 
   await loadStats();
+  await loadPage(true);
+}
+
+// --- Rapport: gelijknamige haltes waarvan sommige al nagekeken zijn --------
+// Een naam die zowel een nagekeken als een niet-nagekeken StopPlace draagt: de niet-nagekeken
+// exemplaren zijn mogelijk over het hoofd gezien doordat een curator de naam al bij een
+// gelijknamige halte zag afvinken.
+
+async function openDuplicateNamesDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.duplicateNames"))}</h2>
+    <p class="hint-text">${escapeHtml(t("duplicateNames.hint"))}</p>
+    <input type="search" id="dup-search" placeholder="${escapeHtml(t("report.filterPlaceholder"))}">
+    <ul id="dup-list"></ul>
+    <button type="button" class="secondary" id="dup-load-more" hidden>${escapeHtml(t("report.loadMore"))}</button>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="dup-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("dup-close").addEventListener("click", closeDialog);
+
+  const paging = { query: "", offset: 0, limit: 20 };
+  let debounceHandle = null;
+
+  async function loadPage(reset) {
+    if (reset) {
+      paging.offset = 0;
+      document.getElementById("dup-list").innerHTML = "";
+    }
+    const groups = await apiFetch(
+      "/api/review/duplicate-names?q=" + encodeURIComponent(paging.query) + "&limit=" + paging.limit + "&offset=" + paging.offset);
+    const list = document.getElementById("dup-list");
+    for (const group of groups) {
+      const groupLi = document.createElement("li");
+      groupLi.className = "report-group";
+      const heading = document.createElement("div");
+      heading.className = "report-group-heading";
+      heading.textContent = t("duplicateNames.group", { name: group.name, reviewed: group.reviewedCount });
+      groupLi.appendChild(heading);
+      const sub = document.createElement("ul");
+      for (const stop of group.unreviewed) {
+        const li = document.createElement("li");
+        li.className = "report-item";
+        li.textContent = stop.path;
+        li.addEventListener("click", () => {
+          closeDialog();
+          selectStop(stop.id);
+        });
+        sub.appendChild(li);
+      }
+      groupLi.appendChild(sub);
+      list.appendChild(groupLi);
+    }
+    paging.offset += groups.length;
+    document.getElementById("dup-load-more").hidden = groups.length < paging.limit;
+  }
+
+  document.getElementById("dup-search").addEventListener("input", (event) => {
+    clearTimeout(debounceHandle);
+    paging.query = event.target.value.trim();
+    debounceHandle = setTimeout(() => loadPage(true), 250);
+  });
+  document.getElementById("dup-load-more").addEventListener("click", () => loadPage(false));
+
   await loadPage(true);
 }
 
