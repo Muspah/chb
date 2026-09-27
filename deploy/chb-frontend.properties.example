@@ -1,0 +1,17 @@
+# Sjabloon — bevat GEEN echte waarden, mag in git.
+#
+# Kopieer dit naar de server, buiten de app-directory (bv. $HOME/chb-frontend.local.properties,
+# niet in de map waar de jar staat), vul de echte waarden in en zet er chmod 600 op:
+#
+#   cp chb-frontend.properties.example ~/chb-frontend.local.properties
+#   chmod 600 ~/chb-frontend.local.properties
+#
+# Start de app dan met deploy/run.sh, of rechtstreeks:
+#   java -jar chb-frontend.jar --spring.config.additional-location=file:/pad/naar/chb-frontend.local.properties
+
+spring.security.oauth2.client.registration.azure.client-id=REPLACE_ME
+spring.security.oauth2.client.registration.azure.client-secret=REPLACE_ME
+spring.security.oauth2.client.provider.azure.issuer-uri=https://login.microsoftonline.com/REPLACE_ME_TENANT_ID/v2.0
+
+app.datasource.viewer.password=REPLACE_ME
+app.datasource.editor.password=REPLACE_ME

@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>be.gtfsbe.chb</groupId>
+    <artifactId>chb-frontend</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <name>chb-frontend</name>
+    <description>Centraal haltebestand: publieke kaartviewer + beveiligd beheer</description>
+
+    <properties>
+        <java.version>25</java.version>
+        <!-- Static-asset minification (style.css/app.js/i18n.js) runs each tool's own
+             command-line jar as a forked subprocess (see maven-dependency-plugin +
+             exec-maven-plugin below), NOT through com.samaxes.maven:minify-maven-plugin - that
+             2016, since-unmaintained wrapper plugin turned out to be broken in three independent,
+             unrelated ways under a modern Maven/JDK (a Closure Compiler Java API it calls
+             directly, `new DependencyOptions()`, was removed in Closure Compiler v20190301+; its
+             own generic file-I/O code calls org.codehaus.plexus.util.IOUtil, which no longer
+             exists in the plexus-utils bundled with current Maven). See Claude/CLAUDE.md for the
+             full trail. Both YUI Compressor (CSS) and Closure Compiler (JS) ship as
+             self-executable CLI jars with a stable, decade-old command-line contract completely
+             independent of that broken wrapper, so this can safely track the latest release of
+             each. -->
+        <closure-compiler.version>v20260817</closure-compiler.version>
+        <yuicompressor.version>2.4.8</yuicompressor.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <!-- compile-scope (niet runtime): EditorTransactionRunner leest SQLSTATE/DETAIL/HINT van een geweigerde curator-actie via PSQLException -->
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-jdbc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Fetches the YUI Compressor and Closure Compiler CLI jars so exec-maven-plugin
+                 (below) can run them as forked subprocesses - see the properties block above
+                 for why not minify-maven-plugin. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.11.0</version>
+                <executions>
+                    <execution>
+                        <id>fetch-minifier-clis</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>com.google.javascript</groupId>
+                                    <artifactId>closure-compiler</artifactId>
+                                    <version>${closure-compiler.version}</version>
+                                    <destFileName>closure-compiler.jar</destFileName>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>com.yahoo.platform.yui</groupId>
+                                    <artifactId>yuicompressor</artifactId>
+                                    <version>${yuicompressor.version}</version>
+                                    <destFileName>yuicompressor.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${project.build.directory}/tools</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Minifies style.css/app.js/i18n.js in place (target/classes/static, same
+                 filenames, so index.html needs no changes) by invoking each tool's own
+                 command-line interface directly in a forked JVM, after the resources plugin has
+                 copied the static files there and before the jar is packaged. One execution per
+                 file: the CLIs don't support "N inputs -> N separate outputs" in one call
+                 without module/chunk configuration we don't need here. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.6.3</version>
+                <executions>
+                    <execution>
+                        <id>minify-style-css</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>${java.home}/bin/java</executable>
+                            <arguments>
+                                <argument>-jar</argument>
+                                <argument>${project.build.directory}/tools/yuicompressor.jar</argument>
+                                <argument>--type</argument>
+                                <argument>css</argument>
+                                <argument>--charset</argument>
+                                <argument>UTF-8</argument>
+                                <argument>-o</argument>
+                                <argument>${project.build.outputDirectory}/static/style.css</argument>
+                                <argument>${project.build.outputDirectory}/static/style.css</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <!-- Closure Compiler fails silently (exit 1, no stderr output at all,
+                         confirmed by reproducing this exact command against the real i18n.js
+                         with a local JDK) when the js_output_file flag points at the same path
+                         as the js input flag. Unlike YUI Compressor above (which reads its input
+                         fully into memory first and handles in-place overwriting fine, confirmed
+                         the same way), Closure Compiler does not. Route through /bin/sh so the
+                         compiled output can go to a temp file and then be moved over the
+                         original in the same step. -->
+                    <execution>
+                        <id>minify-i18n-js</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>/bin/sh</executable>
+                            <arguments>
+                                <argument>-c</argument>
+                                <argument>"${java.home}/bin/java" -jar "${project.build.directory}/tools/closure-compiler.jar" --compilation_level SIMPLE_OPTIMIZATIONS --language_in ECMASCRIPT_2020 --language_out ECMASCRIPT_2020 --js "${project.build.outputDirectory}/static/i18n.js" --js_output_file "${project.build.outputDirectory}/static/i18n.js.tmp" &amp;&amp; mv "${project.build.outputDirectory}/static/i18n.js.tmp" "${project.build.outputDirectory}/static/i18n.js"</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>minify-app-js</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>/bin/sh</executable>
+                            <arguments>
+                                <argument>-c</argument>
+                                <argument>"${java.home}/bin/java" -jar "${project.build.directory}/tools/closure-compiler.jar" --compilation_level SIMPLE_OPTIMIZATIONS --language_in ECMASCRIPT_2020 --language_out ECMASCRIPT_2020 --js "${project.build.outputDirectory}/static/app.js" --js_output_file "${project.build.outputDirectory}/static/app.js.tmp" &amp;&amp; mv "${project.build.outputDirectory}/static/app.js.tmp" "${project.build.outputDirectory}/static/app.js"</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Strips HTML comments and collapses inter-tag whitespace in index.html. Reads
+                 straight from src (not the resources-plugin copy) and writes into
+                 target/classes/static, so it runs independently of the CSS/JS minification
+                 above. -->
+            <plugin>
+                <groupId>com.github.hazendaz.maven</groupId>
+                <artifactId>htmlcompressor-maven-plugin</artifactId>
+                <version>2.1.0</version>
+                <executions>
+                    <execution>
+                        <id>compress-html</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>html</goal>
+                        </goals>
+                        <configuration>
+                            <srcFolder>${project.basedir}/src/main/resources/static</srcFolder>
+                            <targetFolder>${project.build.outputDirectory}/static</targetFolder>
+                            <fileExtensions>
+                                <fileExtension>html</fileExtension>
+                            </fileExtensions>
+                            <removeComments>true</removeComments>
+                            <removeIntertagSpaces>true</removeIntertagSpaces>
+                            <removeMultiSpaces>true</removeMultiSpaces>
+                            <!-- Unrelated feature (merges inline <script> blocks referencing
+                                 external URLs into a sprite file), on by default and expecting
+                                 src/main/resources/html/integration.js to exist. We don't use it
+                                 and don't have that file - disable explicitly. -->
+                            <javascriptHtmlSprite>false</javascriptHtmlSprite>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

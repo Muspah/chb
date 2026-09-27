@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0d2c4d">
+<meta name="description" content="Halteregister: the public stop place register for Belgian public transport, covering De Lijn, NMBS/SNCB, TEC and other operators on one searchable map.">
+<title>Stop Place Register Belgium</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='%232a78d6' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
+      integrity="sha256-YU3qCpj/P06tdPBJGPax0bm6Q1wltfwjsho5TR4+TYc=" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"
+      integrity="sha256-YSWCMtmNZNwqex4CEw1nQhvFub2lmU7vcCKP+XVwwXA=" crossorigin="">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<p class="sr-only">Halteregister is the public stop place register for Belgian public transport, covering
+De Lijn, NMBS/SNCB, TEC and other operators on one searchable map.</p>
+<div id="app">
+  <header id="topbar">
+    <div id="brand">
+      <svg id="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2C7.5 2 4 5.5 4 10c0 6 8 12 8 12s8-6 8-12c0-4.5-3.5-8-8-8z"/>
+        <circle cx="12" cy="10" r="3"/>
+      </svg>
+      <div id="brand-text">
+        <span id="brand-name">Halteregister</span>
+        <span id="brand-tag" data-i18n="app.tagline">a product of GTFS.be</span>
+      </div>
+    </div>
+
+    <div id="search-box">
+      <svg id="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/>
+        <path d="M21 21l-4.3-4.3"/>
+      </svg>
+      <input id="search" type="search" data-i18n-placeholder="search.placeholder" placeholder="Search by name or platform code&hellip;" autocomplete="off">
+      <ul id="search-results"></ul>
+    </div>
+
+    <div id="auth-area">
+      <a id="export-link" class="toggle-pill" href="https://data.gtfs.be/belgium/netex/stops/spr-stopplaces.zip" data-i18n="app.exportDownload">Download NeTEx export</a>
+      <button type="button" id="btn-show-disabled" class="toggle-pill">
+        <span id="show-disabled-label">Show disabled stops</span>
+      </button>
+      <div id="lang-switch" role="group" data-i18n-aria-label="app.langSwitchAria" aria-label="Language">
+        <button type="button" class="lang-btn" data-lang="en">EN</button>
+        <button type="button" class="lang-btn" data-lang="nl">NL</button>
+        <button type="button" class="lang-btn" data-lang="de">DE</button>
+        <button type="button" class="lang-btn" data-lang="fr">FR</button>
+      </div>
+      <span id="user-badge">
+        <svg class="user-avatar" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="8" r="4"/>
+          <path d="M4 20c0-4 4-6 8-6s8 2 8 6"/>
+        </svg>
+        <span id="user-info" hidden></span>
+      </span>
+      <a id="login-link" href="/oauth2/authorization/azure" data-i18n="auth.signIn">Sign in</a>
+      <form id="logout-form" method="post" action="/logout" hidden>
+        <input type="hidden" name="_csrf" id="logout-csrf">
+        <button type="submit" data-i18n="auth.signOut">Sign out</button>
+      </form>
+    </div>
+  </header>
+
+  <div id="map-area">
+    <div id="map"></div>
+    <div id="map-hint" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+      <span data-i18n="map.hint">Too many stops in this view &mdash; zoom in for more detail.</span>
+    </div>
+
+    <aside id="panel" hidden>
+      <button id="panel-close" data-i18n-aria-label="common.close" aria-label="Close">&times;</button>
+      <div id="panel-content"></div>
+    </aside>
+  </div>
+
+  <div id="toolbar" hidden>
+    <div class="toolbar-group">
+      <button id="btn-new-node" class="tbtn">
+        <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+        <span class="tbtn-label" data-i18n="toolbar.newNode">New grouping node</span>
+      </button>
+      <button id="btn-group-mode" class="tbtn">
+        <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg>
+        <span class="tbtn-label" data-i18n="toolbar.groupStops">Group stops</span>
+      </button>
+      <button id="btn-merge-mode" class="tbtn">
+        <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8 7l8 4M8 17l8-4"/></svg>
+        <span class="tbtn-label" data-i18n="toolbar.mergeStops">Merge stops</span>
+      </button>
+    </div>
+
+    <div id="toolbar-status">
+      <span id="group-status" class="status-chip" hidden></span>
+      <button id="group-confirm-btn" class="tbtn primary" data-i18n="toolbar.groupNow" hidden>Group now</button>
+      <span id="merge-status" class="status-chip" hidden></span>
+    </div>
+
+    <div class="toolbar-group toolbar-group-end">
+      <button id="btn-report" class="tbtn">
+        <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v2H9z"/><path d="M8 10h8M8 14h8M8 18h5"/></svg>
+        <span class="tbtn-label" data-i18n="toolbar.report">Review report</span>
+      </button>
+      <button id="btn-unreviewed-map" class="tbtn toggle">
+        <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span id="unreviewed-toggle-label" class="tbtn-label">Map: unreviewed only</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="dialog-overlay" hidden>
+  <div id="dialog-box"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"
+        integrity="sha256-Hk4dIpcqOSb0hZjgyvFOP+cEmDXUKKNE/tT542ZbNQg=" crossorigin=""></script>
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
