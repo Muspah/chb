@@ -54,6 +54,22 @@ public class StopEditController {
         return ResponseEntity.noContent().build();
     }
 
+    public record LocationRequest(double lat, double lon) {
+    }
+
+    @PostMapping("/api/stops/{id}/location")
+    public ResponseEntity<Void> setLocation(@AuthenticationPrincipal OidcUser user, @PathVariable long id,
+                                             @RequestBody LocationRequest request) {
+        repository.setLocation(CurrentUser.email(user), id, request.lat(), request.lon());
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/api/stops/{id}/reset-location")
+    public ResponseEntity<Void> resetLocation(@AuthenticationPrincipal OidcUser user, @PathVariable long id) {
+        repository.resetLocation(CurrentUser.email(user), id);
+        return ResponseEntity.noContent().build();
+    }
+
     @PutMapping("/api/stops/{id}/attributes/{key}")
     public ResponseEntity<Void> putAttribute(@AuthenticationPrincipal OidcUser user, @PathVariable long id,
                                               @PathVariable String key, @RequestBody AttributeUpsertRequest request) {

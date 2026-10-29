@@ -22,6 +22,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
 import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.security.web.savedrequest.NullRequestCache;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -59,6 +60,10 @@ public class SecurityConfig {
         RequestMatcher apiMatcher = PathPatternRequestMatcher.pathPattern("/api/**");
 
         http
+            // Login landt altijd op "/" (defaultSuccessUrl alwaysUse=true), dus een opgeslagen request is
+            // nutteloos -- en het maakte voor elke anonieme hit op een beveiligd pad (crawler: /sitemap.xml)
+            // een 72u-durende sessie-rij in chb.spring_session aan.
+            .requestCache(rc -> rc.requestCache(new NullRequestCache()))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.GET,
                     "/", "/index.html", "/app.js", "/i18n.js", "/style.css", "/favicon.ico", "/robots.txt", "/static/**",
@@ -71,7 +76,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/review/**").hasAuthority(CURATOR_AUTHORITY)
                 // Alles wat schrijft: enkel gebruikers met de Curator-app role.
                 .requestMatchers(HttpMethod.POST, "/api/stops", "/api/stops/group", "/api/stops/*/merge",
-                    "/api/stops/*/review", "/api/stops/*/restore", "/api/stops/*/recompute-location",
+                    "/api/stops/*/review", "/api/stops/*/restore", "/api/stops/*/recompute-location", "/api/stops/*/location", "/api/stops/*/reset-location",
                     "/api/stops/*/promote-wrapper")
                     .hasAuthority(CURATOR_AUTHORITY)
                 .requestMatchers(HttpMethod.PATCH, "/api/stops/*").hasAuthority(CURATOR_AUTHORITY)

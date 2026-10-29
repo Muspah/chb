@@ -40,6 +40,14 @@ public class StopEditorRepository {
             id, r.name(), r.stopType(), r.publicCode(), r.parentId());
     }
 
+    public void setLocation(String currentUser, long id, double lat, double lon) {
+        call(currentUser, "SELECT chb.set_location(?, ?::numeric, ?::numeric)", id, lat, lon);
+    }
+
+    public void resetLocation(String currentUser, long id) {
+        call(currentUser, "SELECT chb.reset_location(?)", id);
+    }
+
     public void upsertAttribute(String currentUser, long stopId, String key, String value) {
         call(currentUser, "SELECT chb.set_attribute(?, ?, ?)", stopId, key, value);
     }

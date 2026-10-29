@@ -312,6 +312,8 @@ function initMap() {
     maxClusterRadius: (zoom) => (zoom >= DETAIL_ZOOM ? 3 : 80),
     spiderfyOnMaxZoom: true,
   }).addTo(state.map);
+  // Vlakken van gegroepeerde StopPlaces (onder de quay-stippen); aanklikbaar = de groep selecteren.
+  state.areaLayer = L.layerGroup().addTo(state.map);
   state.map.on("moveend", () => persistView(state.map));
   // Marker-klikken stoppen hun eigen propagatie (Leaflet's standaardgedrag voor interactieve
   // layers), dus dit vuurt enkel bij een klik op de kaart zelf, niet bij het selecteren van een
@@ -342,7 +344,7 @@ function wireMapReloadOnMove() {
 // zorgt dat de stip blijft opvallen ongeacht wat eronder ligt (beige land, groen park, blauw water).
 function stopIcon(props) {
   // Oranje = curated groepering; een wrapper is technisch ook een StopPlace maar visueel gewoon één halte (quay) = blauw.
-  const color = props.isSynthetic && !props.isWrapper ? "#eb6834" : "#2a78d6";
+  const color = props.isSynthetic && !props.isWrapper && !props.isQuay ? "#eb6834" : "#2a78d6";
   const className = props.disabledAt ? "stop-marker stop-marker-disabled" : "stop-marker";
   return L.divIcon({
     className,
@@ -375,13 +377,41 @@ async function loadStops() {
   document.getElementById("map-hint").hidden = !collection.truncated;
   state.stopsById.clear();
   state.markerLayer.clearLayers();
+  state.areaLayer.clearLayers();
   state.markersById.clear();
   const markers = [];
   for (const feature of collection.features) {
     const [lon, lat] = feature.geometry.coordinates;
     const props = feature.properties;
     state.stopsById.set(props.id, props);
-    const marker = L.marker([lat, lon], { icon: stopIcon(props) });
+    if (feature.geometry.type === "Polygon") {
+      const name = props.name || t("map.stopFallbackName", { id: props.id });
+      const area = L.polygon(
+        feature.geometry.coordinates[0].map(([x, y]) => [y, x]),
+        { color: "#eb6834", weight: 2, fillOpacity: 0.15, bubblingMouseEvents: false },
+      );
+      area.bindTooltip(name);
+      area.on("click", () => onMarkerClick(props.id));
+      area.addTo(state.areaLayer);
+      state.markersById.set(props.id, area);
+      continue;
+    }
+    const marker = L.marker([lat, lon], { icon: stopIcon(props), draggable: false }); // pas versleepbaar na "Locatie verplaatsen" in het paneel
+    if (state.me.curator) {
+      marker.on("dragend", async () => {
+        const { lat: newLat, lng: newLon } = marker.getLatLng();
+        try {
+          await apiFetch("/api/stops/" + props.id + "/location", {
+            method: "POST",
+            body: JSON.stringify({ lat: newLat, lon: newLon }),
+          });
+          if (state.lastDetail && state.lastDetail.id === props.id) await selectStop(props.id);
+        } catch (e) {
+          alert(e.message);
+        }
+        await loadStops(); // bij een fout springt de marker terug, bij succes staat hij op de nieuwe plek
+      });
+    }
     const tooltip = props.disabledAt
       ? `${props.name || t("map.stopFallbackName", { id: props.id })} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
       : props.name || t("map.stopFallbackName", { id: props.id });
@@ -416,6 +446,10 @@ function onMarkerClick(id) {
 // het detailpaneel buiten beeld) hier niet meer per se in, zie de fallback in selectStop.
 function panTo(id) {
   const marker = state.markersById.get(id);
+  if (marker && marker.getBounds) { // vlak van een groep: er is geen marker om uit een cluster te halen
+    state.map.fitBounds(marker.getBounds(), { maxZoom: MAX_ZOOM - 1 });
+    return true;
+  }
   if (marker) {
     // zoomToShowLayer zoomt/pant net ver genoeg in tot de marker niet meer in een cluster
     // opgeslorpt zit, i.p.v. enkel pannen naar een punt dat dan nog steeds onzichtbaar is.
@@ -483,6 +517,10 @@ function closePanel() {
 async function selectStop(id) {
   state.selectedStopId = id;
   const wasVisible = panTo(id);
+  // History parallel met detail starten (twee tunnel-round-trips die niet van elkaar afhangen).
+  const historyPromise = state.me.authenticated
+    ? apiFetch("/api/stops/" + id + "/history").catch(() => null)
+    : Promise.resolve(null);
   const detail = await apiFetch("/api/stops/" + id);
   if (!wasVisible && detail.lat != null && detail.lon != null) {
     // Geen lokale marker om naartoe te zoomen (halte lag buiten het huidige viewport) — pan
@@ -490,14 +528,7 @@ async function selectStop(id) {
     // laadt vanzelf de haltes voor de nieuwe positie.
     state.map.setView([detail.lat, detail.lon], Math.max(state.map.getZoom(), DETAIL_ZOOM));
   }
-  let history = null;
-  if (state.me.authenticated) {
-    try {
-      history = await apiFetch("/api/stops/" + id + "/history");
-    } catch (e) {
-      history = null;
-    }
-  }
+  const history = await historyPromise;
   // Bewaard zodat een taalwissel het paneel kan herrenderen zonder opnieuw te bevragen — zie
   // refreshDynamicUiForLangChange().
   state.lastDetail = detail;
@@ -554,6 +585,14 @@ function renderPanel(detail, history) {
       <button class="danger" id="delete-btn">${escapeHtml(t("panel.deleteNode"))}</button>
     </section>` : "";
 
+  const moveSection = state.me.curator && !detail.isQuay ? `
+    <section>
+      <h3>${escapeHtml(t("panel.locationHeading"))}</h3>
+      <p class="hint-text">${escapeHtml(t("panel.moveHint"))}</p>
+      <button class="secondary" id="move-location-btn">${escapeHtml(t("panel.moveLocation"))}</button>
+      ${detail.isWrapper ? `<button class="secondary" id="reset-location-btn">${escapeHtml(t("panel.resetLocation"))}</button>` : ""}
+    </section>` : "";
+
   const recomputeSection = state.me.curator && detail.isSynthetic && !detail.isWrapper && detail.children.length ? `
     <section>
       <h3>${escapeHtml(t("panel.locationHeading"))}</h3>
@@ -587,6 +626,7 @@ function renderPanel(detail, history) {
     </dl>
     ${reviewSection}
     ${wrapperSection}
+    ${moveSection}
     ${recomputeSection}
     ${childrenSection}
     <section>
@@ -716,6 +756,33 @@ function wirePanelActions(detail) {
       await selectStop(detail.id);
       await loadStops();
     }));
+  }
+
+  const moveBtn = document.getElementById("move-location-btn");
+  if (moveBtn) {
+    moveBtn.addEventListener("click", () => {
+      const marker = state.markersById.get(detail.id);
+      if (!marker || !marker.dragging) return alert(t("panel.moveNoMarker"));
+      state.markerLayer.zoomToShowLayer(marker, () => {
+        marker.dragging.enable();
+        moveBtn.disabled = true;
+        moveBtn.textContent = t("panel.moveActive");
+      });
+    });
+  }
+
+  const resetBtn = document.getElementById("reset-location-btn");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", async () => {
+      if (!confirm(t("panel.resetLocationConfirm"))) return;
+      try {
+        await apiFetch("/api/stops/" + detail.id + "/reset-location", { method: "POST" });
+        await selectStop(detail.id);
+        await loadStops();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
   }
 
   const recomputeBtn = document.getElementById("recompute-location-btn");
@@ -1018,7 +1085,7 @@ async function openGroupDialog() {
   // Alleen wrappers (losse haltes zonder eigen StopPlace) -> hun quays worden één nieuwe StopPlace (de
   // klassieke "twee perrons aan weerszijden"); anders (echte StopPlaces erbij) groeperen StopPlaces onder een nieuwe general.
   const quayIds = details.map(resolveQuayId);
-  const groupIds = details.every((d) => d.isWrapper) && quayIds.every((q) => q != null) ? quayIds : picked;
+  const groupIds = details.every((d) => d.isWrapper || d.isQuay) && quayIds.every((q) => q != null) ? quayIds : picked;
   const listHtml = details.map((d) => {
     const sourceCodes = d.sources.map((s) => `${s.sourceSchema}:${s.sourceId}`).join(", ");
     return `
@@ -1153,6 +1220,16 @@ function resolveQuayId(detail) {
   return null;
 }
 
+/**
+ * Vervoerder van een bron: bmc_tec = tec, delijn_opendata = delijn. Mergen over vervoerders heen mag
+ * sinds V135 (ndov#70), maar alleen voor dezelfde fysieke paal (Business Rules CHB §6).
+ */
+function operatorsDiffer(a, b) {
+  const ops = (d) => new Set(d.sources.map((s) => s.sourceSchema.replace(/^bmc_/, "").replace(/_opendata$/, "")));
+  const all = new Set([...ops(a), ...ops(b)]);
+  return ops(a).size > 0 && ops(b).size > 0 && all.size > 1;
+}
+
 async function confirmMerge(pickedSourceId, pickedTargetId) {
   const [source, target] = await Promise.all([
     apiFetch("/api/stops/" + pickedSourceId),
@@ -1174,6 +1251,7 @@ async function confirmMerge(pickedSourceId, pickedTargetId) {
     <h2>${escapeHtml(t("toolbar.mergeStops"))}</h2>
     <p>${t("merge.explain1", { source: escapeHtml(source.name), sourceFeeds: escapeHtml(sourceFeeds), target: escapeHtml(target.name), targetFeeds: escapeHtml(targetFeeds) })}</p>
     <p>${t("merge.explain2", { source: escapeHtml(source.name), target: escapeHtml(target.name) })}</p>
+    ${operatorsDiffer(source, target) ? `<p class="error-text">${t("merge.crossOperator")}</p>` : ""}
     <span class="error-text" id="merge-error"></span>
     <div class="dialog-actions">
       <button type="button" class="secondary" id="merge-cancel">${escapeHtml(t("common.cancel"))}</button>

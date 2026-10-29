@@ -9,6 +9,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.session.jdbc.config.annotation.SpringSessionDataSource;
 import org.springframework.session.jdbc.config.annotation.web.http.EnableJdbcHttpSession;
+import org.springframework.session.web.http.CookieSerializer;
+import org.springframework.session.web.http.DefaultCookieSerializer;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import javax.sql.DataSource;
@@ -44,6 +46,15 @@ import javax.sql.DataSource;
 @Configuration
 @EnableJdbcHttpSession(tableName = "chb.spring_session", maxInactiveIntervalInSeconds = 259200)
 public class DataSourceConfig {
+
+    /** Persistente SESSION-cookie (72u, gelijk aan de DB-sessie): zonder Max-Age verdwijnt hij bij het sluiten van de browser. */
+    @Bean
+    public CookieSerializer cookieSerializer() {
+        DefaultCookieSerializer c = new DefaultCookieSerializer();
+        c.setCookieMaxAge(259200);
+        c.setSameSite("Lax");
+        return c;
+    }
 
     @Bean
     @ConfigurationProperties("app.datasource.viewer")

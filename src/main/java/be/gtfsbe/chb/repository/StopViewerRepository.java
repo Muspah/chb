@@ -102,7 +102,13 @@ public class StopViewerRepository {
     // chb.stop.geom (db/add_stop_geom_postgis.sql) — zonder deze bbox-filter (en zonder cap
     // hieronder) laadt de kaart bij elke actie de volledige tabel, wat >1s duurde.
     private static final String MAP_FEATURES_BASE_SQL = """
-        SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at
+        SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at,
+               CASE WHEN NOT s.is_wrapper THEN (
+                   SELECT ST_AsText(ST_Buffer(ST_ConvexHull(ST_Collect(q.geom))::geography, 8)::geometry, 6)
+                   FROM (SELECT s.id AS sid UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = s.id) x
+                   JOIN chb.quay q ON q.stop_id = x.sid
+                   WHERE q.merged_into_id IS NULL AND q.geom IS NOT NULL
+               ) END AS area_wkt
         FROM chb.stop s
         WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL AND s.merged_into_id IS NULL
         AND s.geom && ST_MakeEnvelope(?, ?, ?, ?, 4326)
@@ -124,7 +130,7 @@ public class StopViewerRepository {
 
     public GeoJsonFeatureCollection findAllAsMapFeatures(MapBounds bounds, boolean showDisabled) {
         String sql = MAP_FEATURES_BASE_SQL + disabledFilterSql(showDisabled);
-        return queryMapFeatures(sql, bounds, DELETED_ATTRIBUTE_KEY);
+        return queryMapFeatures(sql, bounds, showDisabled, DELETED_ATTRIBUTE_KEY);
     }
 
     /** Voor de "doorlichtingskaart" (build-instruction.md-uitbreiding): enkel nog niet nagekeken haltes. */
@@ -134,14 +140,14 @@ public class StopViewerRepository {
                 SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?
             )
             """;
-        return queryMapFeatures(sql, bounds, DELETED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY);
+        return queryMapFeatures(sql, bounds, showDisabled, DELETED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY);
     }
 
     // Vraagt telkens één rij méér op dan de cap: als die erbij zit, weten we dat afgekapt is,
     // zonder een aparte COUNT(*)-query (die op een groot uitgezoomd viewport zelf ook traag zou
     // zijn — precies wat we vermijden).
-    private GeoJsonFeatureCollection queryMapFeatures(String baseSql, MapBounds bounds, Object... extraParams) {
-        String sql = baseSql + "ORDER BY s.id LIMIT ?";
+    private GeoJsonFeatureCollection queryMapFeatures(String baseSql, MapBounds bounds, boolean showDisabled, Object... extraParams) {
+        String sql = baseSql + "LIMIT ?"; // geen ORDER BY: boven de limiet gooien we toch alles weg
         Object[] params = new Object[4 + extraParams.length + 1];
         params[0] = bounds.minLon();
         params[1] = bounds.minLat();
@@ -151,8 +157,50 @@ public class StopViewerRepository {
         params[params.length - 1] = MAP_FEATURES_LIMIT + 1;
         List<GeoJsonFeature> rows = jdbcTemplate.query(sql, (rs, rowNum) -> mapFeatureRow(rs), params);
         boolean truncated = rows.size() > MAP_FEATURES_LIMIT;
-        List<GeoJsonFeature> features = truncated ? rows.subList(0, MAP_FEATURES_LIMIT) : rows;
+        // Te veel in beeld: bewust niets tonen (geen willekeurig deel), de gebruiker zoomt in.
+        if (truncated) return new GeoJsonFeatureCollection(List.of(), true);
+        List<GeoJsonFeature> features = new ArrayList<>(rows);
+        features.addAll(quayDotsFor(features, showDisabled));
         return new GeoJsonFeatureCollection(features, truncated);
+    }
+
+    // Geen OR/IN-subselect op q.stop_id: dat gaf per StopPlace een seq scan over alle quays (5,7 s op 466
+    // stops, gemeten 2026-10-13); de UNION-ALL-join gebruikt ix_quay_stop (45 ms).
+    // Een groep (StopPlace met vlak) heeft geen eigen stip meer: haar quays zijn de stippen, het
+    // vlak toont dat ze bij elkaar horen. Quays van een general: die van zijn monomodals (één niveau).
+    private List<GeoJsonFeature> quayDotsFor(List<GeoJsonFeature> stops, boolean showDisabled) {
+        String ids = stops.stream().filter(f -> "Polygon".equals(f.geometry().type()))
+                .map(f -> String.valueOf(f.properties().get("id"))).collect(Collectors.joining(",", "{", "}"));
+        if (ids.equals("{}")) return List.of();
+        return jdbcTemplate.query("""
+            SELECT q.id, q.name, q.public_code, q.lat, q.lon, q.stop_id, q.is_synthetic, q.disabled_at
+            FROM (SELECT unnest(?::bigint[]) AS sid
+                  UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = ANY(?::bigint[])) x
+            JOIN chb.quay q ON q.stop_id = x.sid
+            WHERE q.merged_into_id IS NULL AND q.lat IS NOT NULL AND q.lon IS NOT NULL
+            """ + (showDisabled ? "" : "AND q.disabled_at IS NULL\n"), (rs, n) -> {
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("id", rs.getLong("id"));
+            p.put("name", rs.getString("name"));
+            p.put("publicCode", rs.getString("public_code"));
+            p.put("parentId", rs.getLong("stop_id"));
+            p.put("isSynthetic", rs.getBoolean("is_synthetic"));
+            p.put("isWrapper", false);
+            p.put("isQuay", true);
+            p.put("disabledAt", rs.getObject("disabled_at", OffsetDateTime.class));
+            return new GeoJsonFeature(GeoJsonGeometry.point(rs.getDouble("lon"), rs.getDouble("lat")), p);
+        }, ids, ids);
+    }
+
+    // "POLYGON((x y,x y,...))" -> één buitenring; de buffer levert nooit gaten.
+    private static double[][][] polygonFromWkt(String wkt) {
+        String[] pts = wkt.substring(wkt.indexOf("((") + 2, wkt.lastIndexOf("))")).split(",");
+        double[][] ring = new double[pts.length][];
+        for (int i = 0; i < pts.length; i++) {
+            String[] xy = pts[i].trim().split(" ");
+            ring[i] = new double[] {Double.parseDouble(xy[0]), Double.parseDouble(xy[1])};
+        }
+        return new double[][][] {ring};
     }
 
     private static GeoJsonFeature mapFeatureRow(ResultSet rs) throws SQLException {
@@ -166,6 +214,11 @@ public class StopViewerRepository {
         properties.put("isSynthetic", rs.getBoolean("is_synthetic"));
         properties.put("isWrapper", rs.getBoolean("is_wrapper"));
         properties.put("disabledAt", rs.getObject("disabled_at", OffsetDateTime.class));
+        String areaWkt = rs.getString("area_wkt");
+        if (areaWkt != null && areaWkt.startsWith("POLYGON")) {
+            properties.put("isArea", true);
+            return new GeoJsonFeature(GeoJsonGeometry.polygon(polygonFromWkt(areaWkt)), properties);
+        }
         return new GeoJsonFeature(GeoJsonGeometry.point(rs.getDouble("lon"), rs.getDouble("lat")), properties);
     }
 
@@ -176,133 +229,133 @@ public class StopViewerRepository {
      * first/last-seen van een StopPlace zijn de samenvatting over al zijn quays.
      */
     public Optional<StopDetail> findDetail(long id) {
-        Optional<StopDetail> stopPlace = findStopPlaceDetail(id);
-        return stopPlace.isPresent() ? stopPlace : findQuayDetail(id);
+        // Id-ruimtes zijn disjunct: een StopPlace-treffer (veelvoorkomend) kost 1 round-trip, een quay 2.
+        Optional<StopDetail> stopPlace = fetchDetail(id, false);
+        return stopPlace.isPresent() ? stopPlace : fetchDetail(id, true);
     }
 
-    private Optional<StopDetail> findStopPlaceDetail(long id) {
-        String sql = """
-            SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at,
-                   concat_ws(' > ', g.name, s.name) AS path
-            FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
-            WHERE s.id = ?
-            """;
-        return jdbcTemplate.query(sql, (rs, rowNum) -> buildDetail(rs, id, false), id).stream().findFirst();
-    }
+    private static final String STOP_PLACE_SQL = """
+        SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at,
+               concat_ws(' > ', g.name, s.name) AS path
+        FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
+        WHERE s.id = ?
+        """;
 
-    private Optional<StopDetail> findQuayDetail(long id) {
-        // Het type is dat van de StopPlace (een quay heeft zelf geen stop_type); parentId = die StopPlace,
-        // ook bij een wrapper (chb.update_stop leest "zelfde StopPlace" als geen wijziging).
-        String sql = """
-            SELECT q.id, q.name, s.stop_type, q.public_code, q.lat, q.lon, q.stop_id AS parent_id, q.is_synthetic, false AS is_wrapper,
-                   q.disabled_at,
-                   CASE WHEN s.is_wrapper THEN concat_ws(' > ', g.name, q.name) ELSE concat_ws(' > ', g.name, s.name, q.name) END AS path
-            FROM chb.quay q JOIN chb.stop s ON s.id = q.stop_id LEFT JOIN chb.stop g ON g.id = s.parent_id
-            WHERE q.id = ?
-            """;
-        return jdbcTemplate.query(sql, (rs, rowNum) -> buildDetail(rs, id, true), id).stream().findFirst();
-    }
-
-    private StopDetail buildDetail(ResultSet rs, long id, boolean quay) throws SQLException {
-        // rs.wasNull() reflecteert enkel de laatst-gelezen kolom, dus elke nullable kolom
-        // moet meteen na het lezen omgezet worden — niet pas verderop in de constructor-call.
-        long parentIdRaw = rs.getLong("parent_id");
-        Long parentId = rs.wasNull() ? null : parentIdRaw;
-        double latRaw = rs.getDouble("lat");
-        Double latValue = rs.wasNull() ? null : latRaw;
-        double lonRaw = rs.getDouble("lon");
-        Double lonValue = rs.wasNull() ? null : lonRaw;
-        OffsetDateTime disabledAt = rs.getObject("disabled_at", OffsetDateTime.class);
-        SeenRange seen = findSeenRange(id, quay);
-        Map<String, String> attributes = findAttributes(id, quay);
-        String reviewedAt = attributes.remove(REVIEWED_ATTRIBUTE_KEY);
-        String deletedAt = attributes.remove(DELETED_ATTRIBUTE_KEY);
-        attributes.remove(SOURCE_PARENT_HINT_ATTRIBUTE_KEY);
-        return new StopDetail(
-            rs.getLong("id"),
-            rs.getString("name"),
-            rs.getString("stop_type"),
-            rs.getString("public_code"),
-            latValue,
-            lonValue,
-            rs.getBoolean("is_synthetic"),
-            rs.getBoolean("is_wrapper"),
-            quay,
-            parentId,
-            rs.getString("path"),
-            attributes,
-            findSources(id, quay),
-            findChildren(id, quay),
-            reviewedAt,
-            deletedAt,
-            disabledAt,
-            seen.firstSeen(),
-            seen.lastSeen()
-        );
-    }
-
-    private record SeenRange(OffsetDateTime firstSeen, OffsetDateTime lastSeen) {
-    }
+    // Het type is dat van de StopPlace (een quay heeft zelf geen stop_type); parentId = die StopPlace,
+    // ook bij een wrapper (chb.update_stop leest "zelfde StopPlace" als geen wijziging).
+    private static final String QUAY_SQL = """
+        SELECT q.id, q.name, s.stop_type, q.public_code, q.lat, q.lon, q.stop_id AS parent_id, q.is_synthetic, false AS is_wrapper,
+               q.disabled_at,
+               CASE WHEN s.is_wrapper THEN concat_ws(' > ', g.name, q.name) ELSE concat_ws(' > ', g.name, s.name, q.name) END AS path
+        FROM chb.quay q JOIN chb.stop s ON s.id = q.stop_id LEFT JOIN chb.stop g ON g.id = s.parent_id
+        WHERE q.id = ?
+        """;
 
     // raw_stop.stop_id wijst naar een QUAY; een StopPlace vat zijn quays samen.
     private static final String QUAYS_OF_STOP_PLACE = "SELECT id FROM chb.quay WHERE stop_id = ?";
 
+    // Uitgeschakelde kinderen worden bewust NIET uitgefilterd (anders dan verwijderde) — dit lijstje
+    // in het detailpaneel heeft geen eigen toon-toggle; de frontend markeert ze via disabledAt.
+    private static final String CHILDREN_SQL = """
+        SELECT s.id, s.name, s.public_code, s.disabled_at, false AS is_quay FROM chb.stop s
+        WHERE s.parent_id = ? AND s.merged_into_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
+        UNION ALL
+        SELECT q.id, q.name, q.public_code, q.disabled_at, true FROM chb.quay q
+        WHERE q.stop_id = ? AND q.merged_into_id IS NULL
+        ORDER BY 2
+        """;
+
     /**
-     * Vroegste {@code first_seen_at} en laatste {@code last_seen_at} over alle aan deze halte
-     * (of, voor een StopPlace, aan zijn quays) gekoppelde {@code chb.raw_stop}-rijen. Voor een
-     * groeperingsknoop zonder quays zijn beide {@code null}.
+     * Haalt hoofdrij, first/last-seen, attributen, bronnen en kinderen op als één multi-statement
+     * call: pgjdbc pipelinet die in één netwerk-round-trip. Dat is de moeite zodra de database
+     * achter een tunnel zit, waar elke aparte query de volle latency kost.
      */
-    private SeenRange findSeenRange(long id, boolean quay) {
-        String sql = "SELECT min(first_seen_at) AS first_seen, max(last_seen_at) AS last_seen FROM chb.raw_stop WHERE "
-            + (quay ? "stop_id = ?" : "stop_id IN (" + QUAYS_OF_STOP_PLACE + ")");
-        return jdbcTemplate.query(sql,
-            rs -> rs.next()
-                ? new SeenRange(rs.getObject("first_seen", OffsetDateTime.class),
-                    rs.getObject("last_seen", OffsetDateTime.class))
-                : new SeenRange(null, null),
-            id);
+    private Optional<StopDetail> fetchDetail(long id, boolean quay) {
+        String scope = quay ? "stop_id = ?" : "stop_id IN (" + QUAYS_OF_STOP_PLACE + ")";
+        String sql = (quay ? QUAY_SQL : STOP_PLACE_SQL)
+            + ";SELECT min(first_seen_at) AS first_seen, max(last_seen_at) AS last_seen FROM chb.raw_stop WHERE " + scope
+            + ";" + (quay
+                ? "SELECT key, value FROM chb.quay_attribute WHERE quay_id = ? ORDER BY key"
+                : "SELECT key, value FROM chb.stop_attribute WHERE stop_id = ? ORDER BY key")
+            // Bewust niet via view chb.stop_sources: het ORDER BY daarin blokkeert predicate pushdown
+            // (sorteert alle ~130K raw_stop-rijen: ~570 ms per call i.p.v. <1 ms).
+            + ";SELECT rs.source_schema, rs.source_id, rs.name AS source_name FROM chb.quay q"
+            + " JOIN chb.raw_stop rs ON rs.stop_id = q.id WHERE q.merged_into_id IS NULL AND q."
+            + (quay ? "id" : "stop_id") + " = ? ORDER BY q.name, rs.source_schema"
+            + (quay ? "" : ";" + CHILDREN_SQL);
+        Object[] params = quay
+            ? new Object[] {id, id, id, id}
+            : new Object[] {id, id, id, id, id, DELETED_ATTRIBUTE_KEY, id};
+        return jdbcTemplate.execute((java.sql.Connection con) -> {
+            try (java.sql.PreparedStatement ps = con.prepareStatement(sql)) {
+                for (int i = 0; i < params.length; i++) {
+                    ps.setObject(i + 1, params[i]);
+                }
+                ps.execute();
+                return readDetail(ps, id, quay);
+            }
+        });
     }
 
-    private Map<String, String> findAttributes(long id, boolean quay) {
-        String sql = quay
-            ? "SELECT key, value FROM chb.quay_attribute WHERE quay_id = ? ORDER BY key"
-            : "SELECT key, value FROM chb.stop_attribute WHERE stop_id = ? ORDER BY key";
-        Map<String, String> attributes = new LinkedHashMap<>();
-        jdbcTemplate.query(sql, rs -> {
-            attributes.put(rs.getString("key"), rs.getString("value"));
-        }, id);
-        return attributes;
-    }
-
-    private List<StopSource> findSources(long id, boolean quay) {
-        String sql = "SELECT source_schema, source_id, source_name FROM chb.stop_sources WHERE "
-            + (quay ? "stop_id = ?" : "stop_id IN (" + QUAYS_OF_STOP_PLACE + ")");
-        return jdbcTemplate.query(sql,
-            (rs, rowNum) -> new StopSource(rs.getString("source_schema"), rs.getString("source_id"), rs.getString("source_name")),
-            id);
-    }
-
-    private List<StopChildSummary> findChildren(long id, boolean quay) {
-        if (quay) {
-            return List.of();
+    private Optional<StopDetail> readDetail(java.sql.PreparedStatement ps, long id, boolean quay) throws SQLException {
+        ResultSet main = ps.getResultSet();
+        if (!main.next()) {
+            return Optional.empty();
         }
-        // Kinderen van een StopPlace: StopPlaces eronder (general) of zijn quays (monomodal/wrapper).
-        // Uitgeschakelde kinderen worden hier bewust NIET uitgefilterd (anders dan verwijderde) —
-        // dit lijstje in het detailpaneel heeft geen eigen toon-toggle, dus in plaats van ze
-        // stilzwijgend te verbergen krijgt de frontend disabledAt mee om ze zichtbaar te markeren.
-        String sql = """
-            SELECT s.id, s.name, s.public_code, s.disabled_at, false AS is_quay FROM chb.stop s
-            WHERE s.parent_id = ? AND s.merged_into_id IS NULL
-            AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
-            UNION ALL
-            SELECT q.id, q.name, q.public_code, q.disabled_at, true FROM chb.quay q
-            WHERE q.stop_id = ? AND q.merged_into_id IS NULL
-            ORDER BY 2
-            """;
-        return jdbcTemplate.query(sql,
-            (rs, rowNum) -> new StopChildSummary(rs.getLong("id"), rs.getString("name"), rs.getString("public_code"),
-                rs.getObject("disabled_at", OffsetDateTime.class), rs.getBoolean("is_quay")),
-            id, DELETED_ATTRIBUTE_KEY, id);
+        // rs.wasNull() reflecteert enkel de laatst-gelezen kolom, dus elke nullable kolom
+        // moet meteen na het lezen omgezet worden.
+        long parentIdRaw = main.getLong("parent_id");
+        Long parentId = main.wasNull() ? null : parentIdRaw;
+        double latRaw = main.getDouble("lat");
+        Double lat = main.wasNull() ? null : latRaw;
+        double lonRaw = main.getDouble("lon");
+        Double lon = main.wasNull() ? null : lonRaw;
+        OffsetDateTime disabledAt = main.getObject("disabled_at", OffsetDateTime.class);
+        long rowId = main.getLong("id");
+        String name = main.getString("name");
+        String stopType = main.getString("stop_type");
+        String publicCode = main.getString("public_code");
+        boolean synthetic = main.getBoolean("is_synthetic");
+        boolean wrapper = main.getBoolean("is_wrapper");
+        String path = main.getString("path");
+
+        ps.getMoreResults();
+        ResultSet seenRs = ps.getResultSet();
+        seenRs.next();
+        OffsetDateTime firstSeen = seenRs.getObject("first_seen", OffsetDateTime.class);
+        OffsetDateTime lastSeen = seenRs.getObject("last_seen", OffsetDateTime.class);
+
+        ps.getMoreResults();
+        Map<String, String> attributes = new LinkedHashMap<>();
+        ResultSet attrRs = ps.getResultSet();
+        while (attrRs.next()) {
+            attributes.put(attrRs.getString("key"), attrRs.getString("value"));
+        }
+        String reviewedAt = attributes.remove(REVIEWED_ATTRIBUTE_KEY);
+        String deletedAt = attributes.remove(DELETED_ATTRIBUTE_KEY);
+        attributes.remove(SOURCE_PARENT_HINT_ATTRIBUTE_KEY);
+        attributes.remove("_resolved_meta");
+
+        ps.getMoreResults();
+        List<StopSource> sources = new ArrayList<>();
+        ResultSet srcRs = ps.getResultSet();
+        while (srcRs.next()) {
+            sources.add(new StopSource(srcRs.getString("source_schema"), srcRs.getString("source_id"), srcRs.getString("source_name")));
+        }
+
+        List<StopChildSummary> children = new ArrayList<>();
+        if (!quay) {
+            ps.getMoreResults();
+            ResultSet childRs = ps.getResultSet();
+            while (childRs.next()) {
+                children.add(new StopChildSummary(childRs.getLong("id"), childRs.getString("name"),
+                    childRs.getString("public_code"), childRs.getObject("disabled_at", OffsetDateTime.class),
+                    childRs.getBoolean("is_quay")));
+            }
+        }
+        return Optional.of(new StopDetail(rowId, name, stopType, publicCode, lat, lon, synthetic, wrapper, quay,
+            parentId, path, attributes, sources, children, reviewedAt, deletedAt, disabledAt, firstSeen, lastSeen));
     }
 
     public List<StopSearchResult> search(String query) {
@@ -311,7 +364,7 @@ public class StopViewerRepository {
         String sql = """
             SELECT s.id, concat_ws(' > ', g.name, s.name) AS path,
                 (SELECT string_agg(ss.source_schema || ':' || ss.source_id, ', ' ORDER BY ss.source_schema, ss.source_id)
-                 FROM chb.stop_sources ss JOIN chb.quay q ON q.id = ss.stop_id WHERE q.stop_id = s.id) AS source_codes
+                 FROM chb.raw_stop ss JOIN chb.quay q ON q.id = ss.stop_id WHERE q.stop_id = s.id AND q.merged_into_id IS NULL) AS source_codes
             FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
             WHERE s.merged_into_id IS NULL AND concat_ws(' > ', g.name, s.name) ILIKE ?
             AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
