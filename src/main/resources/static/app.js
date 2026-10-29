@@ -543,6 +543,25 @@ function escapeHtml(value) {
   return div.innerHTML;
 }
 
+// chb.mode_dominance_rank (ndov V98); Business Rules CHB §7: het type van een general volgt de dominante modus.
+const MODE_DOMINANCE = ["rail", "metro", "tram", "trolleyBus", "bus", "coach", "water", "cableway", "funicular", "air"];
+// chb.mode_to_poorest_stop_type; geen type voor coach/water/... (daar oordeelt de database ook niet).
+const MODE_TO_STOP_TYPE = { rail: "railStation", metro: "metroStation", tram: "onstreetTram", trolleyBus: "onstreetBus", bus: "onstreetBus" };
+
+function dominantMode(modes) {
+  const rank = (m) => (MODE_DOMINANCE.includes(m) ? MODE_DOMINANCE.indexOf(m) : 99);
+  return [...new Set(modes.filter(Boolean))].sort((a, b) => rank(a) - rank(b))[0] || null;
+}
+
+function modesText(d) {
+  if (!d.transportMode) return "-";
+  return d.otherTransportModes?.length ? `${d.transportMode} (+ ${d.otherTransportModes.join(", ")})` : d.transportMode;
+}
+
+function kindBadge(kind) {
+  return kind ? ` <span class="badge badge-synthetic">${escapeHtml(t("kind." + kind))}</span>` : "";
+}
+
 function renderPanel(detail, history) {
   const content = document.getElementById("panel-content");
   const parentLine = detail.path ? escapeHtml(detail.path) : t("panel.noPath");
@@ -557,8 +576,9 @@ function renderPanel(detail, history) {
       <table><tbody>
         ${detail.children.map((c) => `
           <tr class="child-row${c.disabledAt ? " child-row-disabled" : ""}" data-id="${c.id}" style="cursor:pointer"${c.disabledAt ? ` title="${escapeHtml(t("panel.disabledSince", { date: formatTimestamp(c.disabledAt) }))}"` : ""}>
-            <td>${escapeHtml(c.name)}${c.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : ""}${c.disabledAt ? ` <span class="badge badge-disabled">${escapeHtml(t("panel.disabledBadge"))}</span>` : ""}</td>
+            <td>${escapeHtml(c.name)}${c.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : kindBadge(c.kind)}${c.disabledAt ? ` <span class="badge badge-disabled">${escapeHtml(t("panel.disabledBadge"))}</span>` : ""}</td>
             <td>${escapeHtml(c.publicCode || "")}</td>
+            <td class="hint-text">${escapeHtml(modesText(c))}</td>
           </tr>`).join("")}
       </tbody></table>
     </section>` : "";
@@ -616,8 +636,10 @@ function renderPanel(detail, history) {
   let html = `
     <h2>${escapeHtml(detail.name)}</h2>
     <div class="path">${parentLine}</div>
-    <div class="badge-row">${typeBadge}${reviewBadge}${disabledBadge}</div>
+    <div class="badge-row">${typeBadge}${kindBadge(detail.kind)}${reviewBadge}${disabledBadge}</div>
+    ${detail.kind === "general" && !detail.transportMode ? `<p class="error-text">${escapeHtml(t("panel.generalNoMode"))}</p>` : ""}
     <dl>
+      <dt>${escapeHtml(t("panel.transportMode"))}</dt><dd>${escapeHtml(modesText(detail))}</dd>
       <dt>${escapeHtml(t("panel.publicCode"))}</dt><dd>${escapeHtml(detail.publicCode || "-")}</dd>
       <dt>${escapeHtml(t("panel.origin"))}</dt><dd>${sourcesLine}</dd>
       ${detail.firstSeenAt ? `<dt>${escapeHtml(t("panel.firstSeen"))}</dt><dd>${escapeHtml(formatTimestamp(detail.firstSeenAt))}</dd>` : ""}
@@ -1085,7 +1107,11 @@ async function openGroupDialog() {
   // Alleen wrappers (losse haltes zonder eigen StopPlace) -> hun quays worden één nieuwe StopPlace (de
   // klassieke "twee perrons aan weerszijden"); anders (echte StopPlaces erbij) groeperen StopPlaces onder een nieuwe general.
   const quayIds = details.map(resolveQuayId);
-  const groupIds = details.every((d) => d.isWrapper || d.isQuay) && quayIds.every((q) => q != null) ? quayIds : picked;
+  const groupsQuays = details.every((d) => d.isWrapper || d.isQuay) && quayIds.every((q) => q != null);
+  const groupIds = groupsQuays ? quayIds : picked;
+  // Een general krijgt zijn modus uit de kinderen (V138), maar het type kiest de curator: stel het voor.
+  const mode = groupsQuays ? null : dominantMode(details.flatMap((d) => [d.transportMode, ...(d.otherTransportModes || [])]));
+  const suggestedType = MODE_TO_STOP_TYPE[mode] || null;
   const listHtml = details.map((d) => {
     const sourceCodes = d.sources.map((s) => `${s.sourceSchema}:${s.sourceId}`).join(", ");
     return `
@@ -1096,14 +1122,15 @@ async function openGroupDialog() {
 
   showDialog(`
     <h2>${escapeHtml(t("toolbar.groupStops"))}</h2>
-    <p>${escapeHtml(t("group.dialogExplain", { count: picked.length }))}</p>
+    <p>${escapeHtml(t(groupsQuays ? "group.explainQuays" : "group.explainStopPlaces", { count: picked.length }))}</p>
+    ${groupsQuays ? "" : `<p class="hint-text">${escapeHtml(t("group.typeRule"))}${suggestedType ? " " + escapeHtml(t("group.typeSuggested", { mode, type: stopTypeLabel(suggestedType) })) : ""}</p>`}
     <ul>${listHtml}</ul>
     <form class="inline-form" id="group-form">
       <label>${escapeHtml(t("group.nameLabel"))}
         <input name="name" value="${escapeHtml(defaultName)}" required>
       </label>
       <label>${escapeHtml(t("group.typeLabel"))}
-        <select name="stopType">${stopTypeOptionsHtml(null, false)}</select>
+        <select name="stopType">${stopTypeOptionsHtml(suggestedType, false)}</select>
       </label>
       <span class="error-text" id="group-error"></span>
       <div class="dialog-actions">

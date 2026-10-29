@@ -236,7 +236,8 @@ public class StopViewerRepository {
 
     private static final String STOP_PLACE_SQL = """
         SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at,
-               concat_ws(' > ', g.name, s.name) AS path
+               concat_ws(' > ', g.name, s.name) AS path,
+               CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes
         FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
         WHERE s.id = ?
         """;
@@ -245,7 +246,7 @@ public class StopViewerRepository {
     // ook bij een wrapper (chb.update_stop leest "zelfde StopPlace" als geen wijziging).
     private static final String QUAY_SQL = """
         SELECT q.id, q.name, s.stop_type, q.public_code, q.lat, q.lon, q.stop_id AS parent_id, q.is_synthetic, false AS is_wrapper,
-               q.disabled_at,
+               q.disabled_at, NULL::text AS kind, q.transport_mode, q.other_transport_modes,
                CASE WHEN s.is_wrapper THEN concat_ws(' > ', g.name, q.name) ELSE concat_ws(' > ', g.name, s.name, q.name) END AS path
         FROM chb.quay q JOIN chb.stop s ON s.id = q.stop_id LEFT JOIN chb.stop g ON g.id = s.parent_id
         WHERE q.id = ?
@@ -257,11 +258,13 @@ public class StopViewerRepository {
     // Uitgeschakelde kinderen worden bewust NIET uitgefilterd (anders dan verwijderde) — dit lijstje
     // in het detailpaneel heeft geen eigen toon-toggle; de frontend markeert ze via disabledAt.
     private static final String CHILDREN_SQL = """
-        SELECT s.id, s.name, s.public_code, s.disabled_at, false AS is_quay FROM chb.stop s
+        SELECT s.id, s.name, s.public_code, s.disabled_at, false AS is_quay,
+               CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes
+        FROM chb.stop s
         WHERE s.parent_id = ? AND s.merged_into_id IS NULL
         AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
         UNION ALL
-        SELECT q.id, q.name, q.public_code, q.disabled_at, true FROM chb.quay q
+        SELECT q.id, q.name, q.public_code, q.disabled_at, true, NULL::text, q.transport_mode, q.other_transport_modes FROM chb.quay q
         WHERE q.stop_id = ? AND q.merged_into_id IS NULL
         ORDER BY 2
         """;
@@ -319,6 +322,9 @@ public class StopViewerRepository {
         boolean synthetic = main.getBoolean("is_synthetic");
         boolean wrapper = main.getBoolean("is_wrapper");
         String path = main.getString("path");
+        String kind = main.getString("kind");
+        String transportMode = main.getString("transport_mode");
+        List<String> otherModes = textArray(main, "other_transport_modes");
 
         ps.getMoreResults();
         ResultSet seenRs = ps.getResultSet();
@@ -351,11 +357,18 @@ public class StopViewerRepository {
             while (childRs.next()) {
                 children.add(new StopChildSummary(childRs.getLong("id"), childRs.getString("name"),
                     childRs.getString("public_code"), childRs.getObject("disabled_at", OffsetDateTime.class),
-                    childRs.getBoolean("is_quay")));
+                    childRs.getBoolean("is_quay"), childRs.getString("kind"), childRs.getString("transport_mode"),
+                    textArray(childRs, "other_transport_modes")));
             }
         }
         return Optional.of(new StopDetail(rowId, name, stopType, publicCode, lat, lon, synthetic, wrapper, quay,
-            parentId, path, attributes, sources, children, reviewedAt, deletedAt, disabledAt, firstSeen, lastSeen));
+            parentId, path, attributes, sources, children, reviewedAt, deletedAt, disabledAt, firstSeen, lastSeen,
+            kind, transportMode, otherModes));
+    }
+
+    private static List<String> textArray(ResultSet rs, String column) throws SQLException {
+        java.sql.Array array = rs.getArray(column);
+        return array == null ? List.of() : List.of((String[]) array.getArray());
     }
 
     public List<StopSearchResult> search(String query) {

@@ -23,6 +23,10 @@ public record StopDetail(
     String deletedAt,
     OffsetDateTime disabledAt,
     OffsetDateTime firstSeenAt,
-    OffsetDateTime lastSeenAt
+    OffsetDateTime lastSeenAt,
+    /** general | monomodal | wrapper; null voor een quay. */
+    String kind,
+    String transportMode,
+    List<String> otherTransportModes
 ) {
 }
