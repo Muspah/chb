@@ -638,6 +638,7 @@ function renderPanel(detail, history) {
     <div class="path">${parentLine}</div>
     <div class="badge-row">${typeBadge}${kindBadge(detail.kind)}${reviewBadge}${disabledBadge}</div>
     ${detail.kind === "general" && !detail.transportMode ? `<p class="error-text">${escapeHtml(t("panel.generalNoMode"))}</p>` : ""}
+    ${detail.kind === "general" && detail.transportMode && !detail.otherTransportModes?.length ? `<p class="error-text">${escapeHtml(t("panel.generalSingleMode"))}</p>` : ""}
     <dl>
       <dt>${escapeHtml(t("panel.transportMode"))}</dt><dd>${escapeHtml(modesText(detail))}</dd>
       <dt>${escapeHtml(t("panel.publicCode"))}</dt><dd>${escapeHtml(detail.publicCode || "-")}</dd>
@@ -1110,7 +1111,8 @@ async function openGroupDialog() {
   const groupsQuays = details.every((d) => d.isWrapper || d.isQuay) && quayIds.every((q) => q != null);
   const groupIds = groupsQuays ? quayIds : picked;
   // Een general krijgt zijn modus uit de kinderen (V138), maar het type kiest de curator: stel het voor.
-  const mode = groupsQuays ? null : dominantMode(details.flatMap((d) => [d.transportMode, ...(d.otherTransportModes || [])]));
+  const modes = groupsQuays ? [] : [...new Set(details.flatMap((d) => [d.transportMode, ...(d.otherTransportModes || [])]).filter(Boolean))];
+  const mode = dominantMode(modes);
   const suggestedType = MODE_TO_STOP_TYPE[mode] || null;
   const listHtml = details.map((d) => {
     const sourceCodes = d.sources.map((s) => `${s.sourceSchema}:${s.sourceId}`).join(", ");
@@ -1123,6 +1125,7 @@ async function openGroupDialog() {
   showDialog(`
     <h2>${escapeHtml(t("toolbar.groupStops"))}</h2>
     <p>${escapeHtml(t(groupsQuays ? "group.explainQuays" : "group.explainStopPlaces", { count: picked.length }))}</p>
+    ${modes.length === 1 ? `<p class="error-text">${escapeHtml(t("group.singleModeWarn", { mode }))}</p>` : ""}
     ${groupsQuays ? "" : `<p class="hint-text">${escapeHtml(t("group.typeRule"))}${suggestedType ? " " + escapeHtml(t("group.typeSuggested", { mode, type: stopTypeLabel(suggestedType) })) : ""}</p>`}
     <ul>${listHtml}</ul>
     <form class="inline-form" id="group-form">
