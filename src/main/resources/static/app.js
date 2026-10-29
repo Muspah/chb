@@ -1108,7 +1108,23 @@ async function openGroupDialog() {
   // Alleen wrappers (losse haltes zonder eigen StopPlace) -> hun quays worden één nieuwe StopPlace (de
   // klassieke "twee perrons aan weerszijden"); anders (echte StopPlaces erbij) groeperen StopPlaces onder een nieuwe general.
   const quayIds = details.map(resolveQuayId);
-  const groupsQuays = details.every((d) => d.isWrapper || d.isQuay) && quayIds.every((q) => q != null);
+  const isLoose = (d) => d.isWrapper || d.isQuay;
+  // Losse haltes samen met echte StopPlaces: niet stil als general groeperen (dan komen wrappers onder een
+  // general, issue #4). Quays horen eerst in een monomodale StopPlace; die kan daarna onder de general.
+  if (details.some(isLoose) && !details.every(isLoose)) {
+    const loose = details.filter(isLoose).map((d) => `<li>${escapeHtml(d.name)}</li>`).join("");
+    showDialog(`
+      <h2>${escapeHtml(t("toolbar.groupStops"))}</h2>
+      <p class="error-text">${escapeHtml(t("group.mixedRefused"))}</p>
+      <ul>${loose}</ul>
+      <div class="dialog-actions">
+        <button type="button" id="group-mixed-close">${escapeHtml(t("common.close"))}</button>
+      </div>
+    `);
+    document.getElementById("group-mixed-close").addEventListener("click", closeDialog);
+    return;
+  }
+  const groupsQuays = details.every(isLoose) && quayIds.every((q) => q != null);
   const groupIds = groupsQuays ? quayIds : picked;
   // Een general krijgt zijn modus uit de kinderen (V138), maar het type kiest de curator: stel het voor.
   const modes = groupsQuays ? [] : [...new Set(details.flatMap((d) => [d.transportMode, ...(d.otherTransportModes || [])]).filter(Boolean))];
