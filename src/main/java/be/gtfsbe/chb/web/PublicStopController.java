@@ -1,6 +1,7 @@
 package be.gtfsbe.chb.web;
 
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
+import be.gtfsbe.chb.dto.NameIssue;
 import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
 import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.ReviewStats;
@@ -93,6 +94,23 @@ public class PublicStopController {
                                                      @RequestParam(name = "offset", defaultValue = "0") int offset) {
         int cappedLimit = Math.min(Math.max(limit, 1), 200);
         return repository.findDuplicateNames(query, cappedLimit, Math.max(offset, 0));
+    }
+
+    @GetMapping("/api/review/name-issues")
+    public List<NameIssue> nameIssues(@RequestParam(name = "reason") String reason,
+                                      @RequestParam(name = "feed", defaultValue = "") String feed,
+                                      @RequestParam(name = "limit", defaultValue = "50") int limit,
+                                      @RequestParam(name = "offset", defaultValue = "0") int offset) {
+        if (!StopViewerRepository.isNameIssueReason(reason)) {
+            throw new InvalidRequestException("Onbekende reden: " + reason);
+        }
+        int cappedLimit = Math.min(Math.max(limit, 1), 200);
+        return repository.findNameIssues(reason, feed, cappedLimit, Math.max(offset, 0));
+    }
+
+    @GetMapping("/api/review/feeds")
+    public List<String> feeds() {
+        return repository.findFeeds();
     }
 
     private static MapBounds mapBounds(double minLon, double minLat, double maxLon, double maxLat) {

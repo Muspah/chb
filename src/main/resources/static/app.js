@@ -1329,6 +1329,7 @@ async function confirmMerge(pickedSourceId, pickedTargetId) {
 function wireReport() {
   document.getElementById("btn-report").addEventListener("click", openReportDialog);
   document.getElementById("btn-duplicate-names").addEventListener("click", openDuplicateNamesDialog);
+  document.getElementById("btn-name-issues").addEventListener("click", openNameIssuesDialog);
 }
 
 function applyUnreviewedToggleUi() {
@@ -1492,6 +1493,87 @@ async function openDuplicateNamesDialog() {
   });
   document.getElementById("dup-load-more").addEventListener("click", () => loadPage(false));
 
+  await loadPage(true);
+}
+
+// --- Rapport: naamproblemen (issue #3) ----------------------------------------
+// Bron van waarheid zijn chb.quay_names/chb.stop_names (ndov V132/V137): de reden komt uit de
+// database, hier wordt niets herberekend. Groepsredenen eerst, info-categorieën achteraan.
+
+const NAME_ISSUE_REASONS = ["disagree", "region_mixed", "general_region_unknown", "general_no_language",
+  "region_unknown", "no_region_language", "bare_code", "no_language", "bru_single", "dg_no_de"];
+
+async function openNameIssuesDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.nameIssues"))}</h2>
+    <p class="hint-text">${escapeHtml(t("nameIssues.hint"))}</p>
+    <div id="names-filters">
+      <select id="names-reason">${NAME_ISSUE_REASONS.map((r) =>
+        `<option value="${r}">${escapeHtml(t("nameIssues.reason." + r))}</option>`).join("")}</select>
+      <select id="names-feed"><option value="">${escapeHtml(t("nameIssues.allFeeds"))}</option></select>
+    </div>
+    <ul id="names-list"></ul>
+    <button type="button" class="secondary" id="names-load-more" hidden>${escapeHtml(t("report.loadMore"))}</button>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="names-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("names-close").addEventListener("click", closeDialog);
+
+  const paging = { offset: 0, limit: 50 };
+  let generation = 0;
+
+  async function loadPage(reset) {
+    const list = document.getElementById("names-list");
+    const more = document.getElementById("names-load-more");
+    if (reset) {
+      paging.offset = 0;
+      list.innerHTML = `<li class="report-item">${escapeHtml(t("common.loading"))}</li>`;
+    }
+    more.hidden = true;
+    // Een trage pagina (views lezen volledig) mag een nieuwere filterkeuze niet overschrijven.
+    const mine = ++generation;
+    const reason = document.getElementById("names-reason").value;
+    const feed = document.getElementById("names-feed").value;
+    const rows = await apiFetch("/api/review/name-issues?reason=" + encodeURIComponent(reason) +
+      "&feed=" + encodeURIComponent(feed) + "&limit=" + paging.limit + "&offset=" + paging.offset);
+    if (mine !== generation || !document.getElementById("names-list")) {
+      return;
+    }
+    if (reset) {
+      list.innerHTML = rows.length ? "" : `<li class="report-item">${escapeHtml(t("nameIssues.none"))}</li>`;
+    }
+    for (const row of rows) {
+      const li = document.createElement("li");
+      li.className = "report-item";
+      const head = [row.name, row.municipality, row.feeds.join(", ")].filter(Boolean).join(" — ");
+      const sub = [row.names,
+        t("nameIssues.default", { name: row.defaultName + (row.defaultLang ? " (" + row.defaultLang + ")" : "") }),
+        row.disagreeLangs.length ? t("nameIssues.disagree", { langs: row.disagreeLangs.join(", ") }) : null,
+        row.reason].filter(Boolean).join(" · ");
+      li.innerHTML = escapeHtml(head) +
+        (row.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : "") +
+        `<div class="report-item-sub">${escapeHtml(sub)}</div>`;
+      li.addEventListener("click", () => {
+        closeDialog();
+        selectStop(row.id);
+      });
+      list.appendChild(li);
+    }
+    paging.offset += rows.length;
+    more.hidden = rows.length < paging.limit;
+  }
+
+  document.getElementById("names-reason").addEventListener("change", () => loadPage(true));
+  document.getElementById("names-feed").addEventListener("change", () => loadPage(true));
+  document.getElementById("names-load-more").addEventListener("click", () => loadPage(false));
+
+  apiFetch("/api/review/feeds").then((feeds) => {
+    const select = document.getElementById("names-feed");
+    for (const feed of feeds) {
+      select.add(new Option(feed, feed));
+    }
+  }).catch(() => {});
   await loadPage(true);
 }
 

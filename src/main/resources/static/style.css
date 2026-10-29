@@ -775,6 +775,22 @@ button, input, select {
   font-size: 0.87rem;
 }
 
+#names-filters {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+
+#names-filters select {
+  flex: 1;
+  min-width: 0;
+}
+
+.report-item-sub {
+  font-size: 0.78rem;
+  color: var(--ink-500);
+}
+
 #report-search:focus {
   outline: none;
   border-color: var(--brand-500);
@@ -782,7 +798,8 @@ button, input, select {
 }
 
 #report-list,
-#dup-list {
+#dup-list,
+#names-list {
   list-style: none;
   margin: 0;
   padding: 0;

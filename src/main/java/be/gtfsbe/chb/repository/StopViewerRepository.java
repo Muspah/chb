@@ -5,6 +5,7 @@ import be.gtfsbe.chb.dto.GeoJsonFeature;
 import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
 import be.gtfsbe.chb.dto.GeoJsonGeometry;
 import be.gtfsbe.chb.dto.MapBounds;
+import be.gtfsbe.chb.dto.NameIssue;
 import be.gtfsbe.chb.dto.ReviewStats;
 import be.gtfsbe.chb.dto.StopChildSummary;
 import be.gtfsbe.chb.dto.StopDetail;
@@ -518,6 +519,83 @@ public class StopViewerRepository {
         return groups.stream()
             .map(g -> new DuplicateNameGroup(g.name(), g.reviewedCount(), byNormName.getOrDefault(g.normName(), List.of())))
             .toList();
+    }
+
+    /**
+     * Filter voor het namenrapport (issue #3): reden → SQL-predicaat op {@code n} (chb.quay_names of chb.stop_names).
+     * Bron van waarheid zijn de views; hier wordt niets herberekend. bru_single/dg_no_de zijn geen fout, alleen info.
+     */
+    private static final Map<String, String> QUAY_NAME_REASONS = Map.of(
+        "region_unknown", "n.name_reason = 'region_unknown'",
+        "no_region_language", "n.name_reason = 'no_region_language'",
+        "no_language", "n.name_reason = 'no_language'",
+        "bare_code", "n.name_reason = 'bare_code'",
+        // Brussel: default_lang is NULL bij tweetalig, gezet als de bron maar één van fr/nl levert.
+        "bru_single", "n.region = 'bru' AND n.name_reason IS NULL AND n.default_lang IS NOT NULL",
+        // Duitstalige Gemeenschap: default de, anders fr.
+        "dg_no_de", "n.region = 'dg' AND n.name_reason IS NULL AND n.default_lang = 'fr'");
+    private static final Map<String, String> STOP_NAME_REASONS = Map.of(
+        "disagree", "n.disagree_langs IS NOT NULL",
+        "region_mixed", "n.name_reason = 'region_mixed'",
+        "general_region_unknown", "n.name_reason = 'general_region_unknown'",
+        "general_no_language", "n.name_reason = 'general_no_language'");
+
+    public static boolean isNameIssueReason(String reason) {
+        return QUAY_NAME_REASONS.containsKey(reason) || STOP_NAME_REASONS.containsKey(reason);
+    }
+
+    public List<String> findFeeds() {
+        return jdbcTemplate.queryForList("SELECT DISTINCT source_schema FROM chb.raw_stop ORDER BY 1", String.class);
+    }
+
+    /**
+     * Live quays/StopPlaces met het gevraagde naamprobleem. De views lezen volledig (~4-7 s; de reden is niet
+     * naar binnen te duwen), dus altijd gepagineerd. Feeds en gemeente: van de quay zelf, of voor een StopPlace
+     * van zijn quays en die van zijn directe kinderen (een general).
+     */
+    public List<NameIssue> findNameIssues(String reason, String feed, int limit, int offset) {
+        String namesText = "(SELECT string_agg(key || ': ' || value, ' · ' ORDER BY key) FROM jsonb_each_text(n.names)) AS names_text";
+        String sql;
+        String quayPredicate = QUAY_NAME_REASONS.get(reason);
+        if (quayPredicate != null) {
+            sql = """
+                SELECT q.id, true AS is_quay, q.name, %s, n.default_name, n.default_lang, n.name_reason, n.disagree_langs,
+                    f.feeds, m.value::jsonb->>'municipality' AS municipality
+                FROM (SELECT *, NULL::text[] AS disagree_langs FROM chb.quay_names) n
+                JOIN chb.quay q ON q.id = n.quay_id
+                LEFT JOIN chb.quay_attribute m ON m.quay_id = q.id AND m.key = '_resolved_meta'
+                CROSS JOIN LATERAL (SELECT array_agg(DISTINCT rs.source_schema ORDER BY rs.source_schema) AS feeds
+                    FROM chb.raw_stop rs WHERE rs.stop_id = q.id) f
+                WHERE q.merged_into_id IS NULL AND q.disabled_at IS NULL AND %s
+                AND (? = '' OR ? = ANY(f.feeds))
+                ORDER BY q.name, q.id LIMIT ? OFFSET ?
+                """.formatted(namesText, quayPredicate);
+        } else {
+            // Geen OR met subselect op quay.stop_id (seq scan per StopPlace), zie de kaartquery.
+            sql = """
+                SELECT s.id, false AS is_quay, s.name, %s, n.default_name, n.default_lang, n.name_reason, n.disagree_langs,
+                    f.feeds, f.municipality
+                FROM chb.stop_names n
+                JOIN chb.stop s ON s.id = n.stop_id
+                CROSS JOIN LATERAL (
+                    SELECT array_agg(DISTINCT rs.source_schema ORDER BY rs.source_schema) AS feeds,
+                        min(m.value::jsonb->>'municipality') AS municipality
+                    FROM (SELECT s.id AS sid UNION ALL
+                          SELECT c.id FROM chb.stop c WHERE c.parent_id = s.id AND c.merged_into_id IS NULL) x
+                    JOIN chb.quay q ON q.stop_id = x.sid AND q.merged_into_id IS NULL
+                    LEFT JOIN chb.raw_stop rs ON rs.stop_id = q.id
+                    LEFT JOIN chb.quay_attribute m ON m.quay_id = q.id AND m.key = '_resolved_meta') f
+                WHERE s.merged_into_id IS NULL AND s.disabled_at IS NULL AND %s
+                AND (? = '' OR ? = ANY(f.feeds))
+                ORDER BY s.name, s.id LIMIT ? OFFSET ?
+                """.formatted(namesText, STOP_NAME_REASONS.get(reason));
+        }
+        return jdbcTemplate.query(sql,
+            (rs, rowNum) -> new NameIssue(rs.getLong("id"), rs.getBoolean("is_quay"), rs.getString("name"),
+                rs.getString("names_text"), rs.getString("default_name"), rs.getString("default_lang"),
+                rs.getString("name_reason"), textArray(rs, "disagree_langs"), textArray(rs, "feeds"),
+                rs.getString("municipality")),
+            feed, feed, limit, offset);
     }
 
     public boolean exists(long id) {
