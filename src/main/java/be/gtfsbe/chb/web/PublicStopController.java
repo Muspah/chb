@@ -17,12 +17,16 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Leest uitsluitend via de chb_viewer-pool ({@link StopViewerRepository}), zowel voor publieke
  * bezoekers als voor ingelogde gebruikers (build-instruction.md §5). Welke van deze routes
  * publiek zijn en welke een sessie vereisen (met name {@code /history}) staat vastgelegd in
  * {@link be.gtfsbe.chb.config.SecurityConfig}, niet in deze klasse.
+ *
+ * <p>{@code Locale} komt uit de {@code Accept-Language}-header, die {@code apiFetch()} op de UI-taal zet
+ * (issue #2: namen in de UI-taal).
  */
 @RestController
 public class PublicStopController {
@@ -36,21 +40,22 @@ public class PublicStopController {
     @GetMapping("/api/stops")
     public GeoJsonFeatureCollection stops(@RequestParam double minLon, @RequestParam double minLat,
                                            @RequestParam double maxLon, @RequestParam double maxLat,
-                                           @RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled) {
-        return repository.findAllAsMapFeatures(mapBounds(minLon, minLat, maxLon, maxLat), showDisabled);
+                                           @RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled,
+                                           Locale locale) {
+        return repository.findAllAsMapFeatures(mapBounds(minLon, minLat, maxLon, maxLat), showDisabled, locale.getLanguage());
     }
 
     @GetMapping("/api/stops/{id}")
-    public StopDetail stop(@PathVariable long id) {
-        return repository.findDetail(id).orElseThrow(() -> new StopNotFoundException(id));
+    public StopDetail stop(@PathVariable long id, Locale locale) {
+        return repository.findDetail(id, locale.getLanguage()).orElseThrow(() -> new StopNotFoundException(id));
     }
 
     @GetMapping("/api/search")
-    public List<StopSearchResult> search(@RequestParam("q") String query) {
+    public List<StopSearchResult> search(@RequestParam("q") String query, Locale locale) {
         if (query == null || query.isBlank()) {
             return List.of();
         }
-        return repository.search(query);
+        return repository.search(query, locale.getLanguage());
     }
 
     @GetMapping("/api/stop-place-types")
@@ -76,8 +81,9 @@ public class PublicStopController {
     @GetMapping("/api/review/unreviewed-map")
     public GeoJsonFeatureCollection unreviewedMap(@RequestParam double minLon, @RequestParam double minLat,
                                                    @RequestParam double maxLon, @RequestParam double maxLat,
-                                                   @RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled) {
-        return repository.findUnreviewedAsMapFeatures(mapBounds(minLon, minLat, maxLon, maxLat), showDisabled);
+                                                   @RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled,
+                                                   Locale locale) {
+        return repository.findUnreviewedAsMapFeatures(mapBounds(minLon, minLat, maxLon, maxLat), showDisabled, locale.getLanguage());
     }
 
     @GetMapping("/api/review/unreviewed")

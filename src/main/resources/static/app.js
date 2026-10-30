@@ -30,7 +30,8 @@ function getCookie(name) {
 
 async function apiFetch(url, options = {}) {
   const method = (options.method || "GET").toUpperCase();
-  const headers = Object.assign({}, options.headers);
+  // UI-taal: de server kiest er de haltenaam mee (chb.quay_names/stop_names, issue #2).
+  const headers = Object.assign({ "Accept-Language": getLang() }, options.headers);
   if (method !== "GET" && method !== "HEAD") {
     const token = getCookie("XSRF-TOKEN");
     if (token) headers["X-XSRF-TOKEN"] = token;
@@ -158,8 +159,10 @@ function refreshDynamicUiForLangChange() {
   applyDisabledToggleUi();
   if (state.group.active) updateGroupStatus();
   if (state.merge.active) renderMergeStatus();
+  // Haltenamen hangen van de taal af: kaart en paneel opnieuw ophalen.
+  loadStops();
   if (!document.getElementById("panel").hidden && state.lastDetail) {
-    renderPanel(state.lastDetail, state.lastHistory);
+    selectStop(state.lastDetail.id);
   }
   closeDialog();
 }
@@ -576,7 +579,7 @@ function renderPanel(detail, history) {
       <table><tbody>
         ${detail.children.map((c) => `
           <tr class="child-row${c.disabledAt ? " child-row-disabled" : ""}" data-id="${c.id}" style="cursor:pointer"${c.disabledAt ? ` title="${escapeHtml(t("panel.disabledSince", { date: formatTimestamp(c.disabledAt) }))}"` : ""}>
-            <td>${escapeHtml(c.name)}${c.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : kindBadge(c.kind)}${c.disabledAt ? ` <span class="badge badge-disabled">${escapeHtml(t("panel.disabledBadge"))}</span>` : ""}</td>
+            <td>${escapeHtml(c.displayName)}${c.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : kindBadge(c.kind)}${c.disabledAt ? ` <span class="badge badge-disabled">${escapeHtml(t("panel.disabledBadge"))}</span>` : ""}</td>
             <td>${escapeHtml(c.publicCode || "")}</td>
             <td class="hint-text">${escapeHtml(modesText(c))}</td>
           </tr>`).join("")}
@@ -634,7 +637,7 @@ function renderPanel(detail, history) {
     : "";
 
   let html = `
-    <h2>${escapeHtml(detail.name)}</h2>
+    <h2>${escapeHtml(detail.displayName)}</h2>
     <div class="path">${parentLine}</div>
     <div class="badge-row">${typeBadge}${kindBadge(detail.kind)}${reviewBadge}${disabledBadge}</div>
     ${detail.kind === "general" && !detail.transportMode ? `<p class="error-text">${escapeHtml(t("panel.generalNoMode"))}</p>` : ""}
@@ -647,6 +650,7 @@ function renderPanel(detail, history) {
       ${detail.lastSeenAt ? `<dt>${escapeHtml(t("panel.lastSeen"))}</dt><dd>${escapeHtml(formatTimestamp(detail.lastSeenAt))}</dd>` : ""}
       <dt>${escapeHtml(t("panel.synthetic"))}</dt><dd>${detail.isSynthetic ? escapeHtml(t("common.yes")) : escapeHtml(t("common.no"))}</dd>
     </dl>
+    ${renderNamesSection(detail)}
     ${reviewSection}
     ${wrapperSection}
     ${moveSection}
@@ -670,6 +674,24 @@ function renderPanel(detail, history) {
 
   content.innerHTML = html;
   wirePanelActions(detail);
+}
+
+// Alle talen uit chb.quay_names/stop_names, de default van het taalgebied en (curator) waarom die afwijkt.
+// Bewerken: attribuut name_<taal> hieronder (chb.set_attribute); de default volgt vanzelf.
+function renderNamesSection(detail) {
+  const langs = Object.entries(detail.names || {});
+  if (!langs.length && !detail.defaultName) return "";
+  return `
+    <section>
+      <h3>${escapeHtml(t("panel.namesHeading"))}</h3>
+      <dl>
+        ${langs.map(([lang, name]) => `<dt>${escapeHtml(lang)}</dt><dd>${escapeHtml(name)}</dd>`).join("")}
+        <dt>${escapeHtml(t("panel.defaultName"))}</dt>
+        <dd>${escapeHtml(detail.defaultName || "-")}${detail.defaultLang ? ` <span class="hint-text">(${escapeHtml(detail.defaultLang)})</span>` : ""}</dd>
+        ${state.me.curator && detail.nameReason ? `<dt>${escapeHtml(t("panel.nameReason"))}</dt><dd>${escapeHtml(detail.nameReason)}</dd>` : ""}
+      </dl>
+      ${state.me.curator ? `<p class="hint-text">${escapeHtml(t("panel.namesEditHint"))}</p>` : ""}
+    </section>`;
 }
 
 function attributeRow(stopId, key, value) {
@@ -696,7 +718,7 @@ function renderEditSections(detail) {
     <section>
       <h3>${escapeHtml(t("panel.editHeading"))}</h3>
       <form class="inline-form" id="edit-form">
-        <label>${escapeHtml(t("common.name"))}
+        <label title="${escapeHtml(t("panel.internalNameHint"))}">${escapeHtml(t("panel.internalName"))}
           <input name="name" value="${escapeHtml(detail.name)}" required${locked}>
         </label>${typeField}
         <label>${escapeHtml(t("panel.publicCode"))}
@@ -824,7 +846,7 @@ function wirePanelActions(detail) {
   const deleteBtn = document.getElementById("delete-btn");
   if (deleteBtn) {
     deleteBtn.addEventListener("click", async () => {
-      if (!confirm(t("panel.deleteConfirm", { name: detail.name }))) return;
+      if (!confirm(t("panel.deleteConfirm", { name: detail.displayName }))) return;
       try {
         await apiFetch("/api/stops/" + detail.id, { method: "DELETE" });
         closePanel();
@@ -923,7 +945,7 @@ function openPromoteDialog(detail) {
     <p>${escapeHtml(t("promote.explain"))}</p>
     <form class="inline-form" id="promote-form">
       <label>${escapeHtml(t("promote.nameLabel"))}
-        <input name="name" value="${escapeHtml(detail.name)}" required>
+        <input name="name" value="${escapeHtml(detail.displayName)}" required>
       </label>
       <span class="error-text" id="promote-error"></span>
       <div class="dialog-actions">
@@ -1104,7 +1126,7 @@ async function openGroupDialog() {
   // beeld ligt. Rechtstreeks ophalen dekt beide gevallen en levert meteen ook de bronnen.
   const picked = state.group.pickedIds;
   const details = await Promise.all(picked.map((id) => apiFetch("/api/stops/" + id)));
-  const defaultName = details[0]?.name || "";
+  const defaultName = details[0]?.displayName || "";
   // Alleen wrappers (losse haltes zonder eigen StopPlace) -> hun quays worden één nieuwe StopPlace (de
   // klassieke "twee perrons aan weerszijden"); anders (echte StopPlaces erbij) groeperen StopPlaces onder een nieuwe general.
   const quayIds = details.map(resolveQuayId);
@@ -1112,7 +1134,7 @@ async function openGroupDialog() {
   // Losse haltes samen met echte StopPlaces: niet stil als general groeperen (dan komen wrappers onder een
   // general, issue #4). Quays horen eerst in een monomodale StopPlace; die kan daarna onder de general.
   if (details.some(isLoose) && !details.every(isLoose)) {
-    const loose = details.filter(isLoose).map((d) => `<li>${escapeHtml(d.name)}</li>`).join("");
+    const loose = details.filter(isLoose).map((d) => `<li>${escapeHtml(d.displayName)}</li>`).join("");
     showDialog(`
       <h2>${escapeHtml(t("toolbar.groupStops"))}</h2>
       <p class="error-text">${escapeHtml(t("group.mixedRefused"))}</p>
@@ -1133,7 +1155,7 @@ async function openGroupDialog() {
   const listHtml = details.map((d) => {
     const sourceCodes = d.sources.map((s) => `${s.sourceSchema}:${s.sourceId}`).join(", ");
     return `
-    <li>${escapeHtml(d.name)}${d.publicCode ? " (" + escapeHtml(d.publicCode) + ")" : ""}
+    <li>${escapeHtml(d.displayName)}${d.publicCode ? " (" + escapeHtml(d.publicCode) + ")" : ""}
       ${sourceCodes ? ` <span class="search-result-code">${escapeHtml(sourceCodes)}</span>` : ""}</li>
   `;
   }).join("");
@@ -1295,8 +1317,8 @@ async function confirmMerge(pickedSourceId, pickedTargetId) {
   const targetFeeds = target.sources.map((s) => `${s.sourceSchema}:${s.sourceId} (${s.sourceName})`).join(", ") || t("common.none");
   showDialog(`
     <h2>${escapeHtml(t("toolbar.mergeStops"))}</h2>
-    <p>${t("merge.explain1", { source: escapeHtml(source.name), sourceFeeds: escapeHtml(sourceFeeds), target: escapeHtml(target.name), targetFeeds: escapeHtml(targetFeeds) })}</p>
-    <p>${t("merge.explain2", { source: escapeHtml(source.name), target: escapeHtml(target.name) })}</p>
+    <p>${t("merge.explain1", { source: escapeHtml(source.displayName), sourceFeeds: escapeHtml(sourceFeeds), target: escapeHtml(target.displayName), targetFeeds: escapeHtml(targetFeeds) })}</p>
+    <p>${t("merge.explain2", { source: escapeHtml(source.displayName), target: escapeHtml(target.displayName) })}</p>
     ${operatorsDiffer(source, target) ? `<p class="error-text">${t("merge.crossOperator")}</p>` : ""}
     <span class="error-text" id="merge-error"></span>
     <div class="dialog-actions">

@@ -6,7 +6,10 @@ import java.util.Map;
 
 public record StopDetail(
     long id,
+    /** Kale chb.stop.name/chb.quay.name: intern label, enkel voor curatoren bewerkbaar. */
     String name,
+    /** Naam in de UI-taal, anders de default van het taalgebied (chb.quay_names/stop_names), anders {@code name}. */
+    String displayName,
     String stopType,
     String publicCode,
     Double lat,
@@ -27,6 +30,12 @@ public record StopDetail(
     /** general | monomodal | wrapper; null voor een quay. */
     String kind,
     String transportMode,
-    List<String> otherTransportModes
+    List<String> otherTransportModes,
+    /** {taal: naam}, alleen wat de bron of een curator levert. Leeg zolang de namencache niet geladen is. */
+    Map<String, String> names,
+    String defaultName,
+    /** NULL = tweetalig (Brussel) of onbekend. */
+    String defaultLang,
+    String nameReason
 ) {
 }

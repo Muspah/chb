@@ -69,9 +69,11 @@ public class StopViewerRepository {
     public static final String SOURCE_PARENT_HINT_ATTRIBUTE_KEY = "_source_parent_station_hint";
 
     private final JdbcTemplate jdbcTemplate;
+    private final StopNameCache names;
 
-    public StopViewerRepository(JdbcTemplate viewerJdbcTemplate) {
+    public StopViewerRepository(JdbcTemplate viewerJdbcTemplate, StopNameCache names) {
         this.jdbcTemplate = viewerJdbcTemplate;
+        this.names = names;
     }
 
     /**
@@ -129,25 +131,26 @@ public class StopViewerRepository {
         return showDisabled ? "" : "AND s.disabled_at IS NULL\n";
     }
 
-    public GeoJsonFeatureCollection findAllAsMapFeatures(MapBounds bounds, boolean showDisabled) {
+    public GeoJsonFeatureCollection findAllAsMapFeatures(MapBounds bounds, boolean showDisabled, String lang) {
         String sql = MAP_FEATURES_BASE_SQL + disabledFilterSql(showDisabled);
-        return queryMapFeatures(sql, bounds, showDisabled, DELETED_ATTRIBUTE_KEY);
+        return queryMapFeatures(sql, bounds, showDisabled, lang, DELETED_ATTRIBUTE_KEY);
     }
 
     /** Voor de "doorlichtingskaart" (build-instruction.md-uitbreiding): enkel nog niet nagekeken haltes. */
-    public GeoJsonFeatureCollection findUnreviewedAsMapFeatures(MapBounds bounds, boolean showDisabled) {
+    public GeoJsonFeatureCollection findUnreviewedAsMapFeatures(MapBounds bounds, boolean showDisabled, String lang) {
         String sql = MAP_FEATURES_BASE_SQL + disabledFilterSql(showDisabled) + """
             AND NOT EXISTS (
                 SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?
             )
             """;
-        return queryMapFeatures(sql, bounds, showDisabled, DELETED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY);
+        return queryMapFeatures(sql, bounds, showDisabled, lang, DELETED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY);
     }
 
     // Vraagt telkens één rij méér op dan de cap: als die erbij zit, weten we dat afgekapt is,
     // zonder een aparte COUNT(*)-query (die op een groot uitgezoomd viewport zelf ook traag zou
     // zijn — precies wat we vermijden).
-    private GeoJsonFeatureCollection queryMapFeatures(String baseSql, MapBounds bounds, boolean showDisabled, Object... extraParams) {
+    private GeoJsonFeatureCollection queryMapFeatures(String baseSql, MapBounds bounds, boolean showDisabled, String lang,
+                                                      Object... extraParams) {
         String sql = baseSql + "LIMIT ?"; // geen ORDER BY: boven de limiet gooien we toch alles weg
         Object[] params = new Object[4 + extraParams.length + 1];
         params[0] = bounds.minLon();
@@ -156,12 +159,12 @@ public class StopViewerRepository {
         params[3] = bounds.maxLat();
         System.arraycopy(extraParams, 0, params, 4, extraParams.length);
         params[params.length - 1] = MAP_FEATURES_LIMIT + 1;
-        List<GeoJsonFeature> rows = jdbcTemplate.query(sql, (rs, rowNum) -> mapFeatureRow(rs), params);
+        List<GeoJsonFeature> rows = jdbcTemplate.query(sql, (rs, rowNum) -> mapFeatureRow(rs, lang), params);
         boolean truncated = rows.size() > MAP_FEATURES_LIMIT;
         // Te veel in beeld: bewust niets tonen (geen willekeurig deel), de gebruiker zoomt in.
         if (truncated) return new GeoJsonFeatureCollection(List.of(), true);
         List<GeoJsonFeature> features = new ArrayList<>(rows);
-        features.addAll(quayDotsFor(features, showDisabled));
+        features.addAll(quayDotsFor(features, showDisabled, lang));
         return new GeoJsonFeatureCollection(features, truncated);
     }
 
@@ -169,7 +172,7 @@ public class StopViewerRepository {
     // stops, gemeten 2026-10-13); de UNION-ALL-join gebruikt ix_quay_stop (45 ms).
     // Een groep (StopPlace met vlak) heeft geen eigen stip meer: haar quays zijn de stippen, het
     // vlak toont dat ze bij elkaar horen. Quays van een general: die van zijn monomodals (één niveau).
-    private List<GeoJsonFeature> quayDotsFor(List<GeoJsonFeature> stops, boolean showDisabled) {
+    private List<GeoJsonFeature> quayDotsFor(List<GeoJsonFeature> stops, boolean showDisabled, String lang) {
         String ids = stops.stream().filter(f -> "Polygon".equals(f.geometry().type()))
                 .map(f -> String.valueOf(f.properties().get("id"))).collect(Collectors.joining(",", "{", "}"));
         if (ids.equals("{}")) return List.of();
@@ -182,7 +185,7 @@ public class StopViewerRepository {
             """ + (showDisabled ? "" : "AND q.disabled_at IS NULL\n"), (rs, n) -> {
             Map<String, Object> p = new LinkedHashMap<>();
             p.put("id", rs.getLong("id"));
-            p.put("name", rs.getString("name"));
+            p.put("name", names.display(rs.getLong("id"), lang, rs.getString("name")));
             p.put("publicCode", rs.getString("public_code"));
             p.put("parentId", rs.getLong("stop_id"));
             p.put("isSynthetic", rs.getBoolean("is_synthetic"));
@@ -204,10 +207,11 @@ public class StopViewerRepository {
         return new double[][][] {ring};
     }
 
-    private static GeoJsonFeature mapFeatureRow(ResultSet rs) throws SQLException {
+    // De kaart toont alleen: "name" is hier de weergavenaam (UI-taal/default), niet de kale naam.
+    private GeoJsonFeature mapFeatureRow(ResultSet rs, String lang) throws SQLException {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("id", rs.getLong("id"));
-        properties.put("name", rs.getString("name"));
+        properties.put("name", names.display(rs.getLong("id"), lang, rs.getString("name")));
         properties.put("stopType", rs.getString("stop_type"));
         properties.put("publicCode", rs.getString("public_code"));
         long parentId = rs.getLong("parent_id");
@@ -229,15 +233,15 @@ public class StopViewerRepository {
      * StopPlaces; quays bereik je via de kinderenlijst van hun StopPlace. Bronnen en
      * first/last-seen van een StopPlace zijn de samenvatting over al zijn quays.
      */
-    public Optional<StopDetail> findDetail(long id) {
+    public Optional<StopDetail> findDetail(long id, String lang) {
         // Id-ruimtes zijn disjunct: een StopPlace-treffer (veelvoorkomend) kost 1 round-trip, een quay 2.
-        Optional<StopDetail> stopPlace = fetchDetail(id, false);
-        return stopPlace.isPresent() ? stopPlace : fetchDetail(id, true);
+        Optional<StopDetail> stopPlace = fetchDetail(id, false, lang);
+        return stopPlace.isPresent() ? stopPlace : fetchDetail(id, true, lang);
     }
 
     private static final String STOP_PLACE_SQL = """
         SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at,
-               concat_ws(' > ', g.name, s.name) AS path,
+               ARRAY[g.id, s.id] AS path_ids, ARRAY[g.name, s.name] AS path_names,
                CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes
         FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
         WHERE s.id = ?
@@ -248,7 +252,8 @@ public class StopViewerRepository {
     private static final String QUAY_SQL = """
         SELECT q.id, q.name, s.stop_type, q.public_code, q.lat, q.lon, q.stop_id AS parent_id, q.is_synthetic, false AS is_wrapper,
                q.disabled_at, NULL::text AS kind, q.transport_mode, q.other_transport_modes,
-               CASE WHEN s.is_wrapper THEN concat_ws(' > ', g.name, q.name) ELSE concat_ws(' > ', g.name, s.name, q.name) END AS path
+               CASE WHEN s.is_wrapper THEN ARRAY[g.id, q.id] ELSE ARRAY[g.id, s.id, q.id] END AS path_ids,
+               CASE WHEN s.is_wrapper THEN ARRAY[g.name, q.name] ELSE ARRAY[g.name, s.name, q.name] END AS path_names
         FROM chb.quay q JOIN chb.stop s ON s.id = q.stop_id LEFT JOIN chb.stop g ON g.id = s.parent_id
         WHERE q.id = ?
         """;
@@ -275,7 +280,7 @@ public class StopViewerRepository {
      * call: pgjdbc pipelinet die in één netwerk-round-trip. Dat is de moeite zodra de database
      * achter een tunnel zit, waar elke aparte query de volle latency kost.
      */
-    private Optional<StopDetail> fetchDetail(long id, boolean quay) {
+    private Optional<StopDetail> fetchDetail(long id, boolean quay, String lang) {
         String scope = quay ? "stop_id = ?" : "stop_id IN (" + QUAYS_OF_STOP_PLACE + ")";
         String sql = (quay ? QUAY_SQL : STOP_PLACE_SQL)
             + ";SELECT min(first_seen_at) AS first_seen, max(last_seen_at) AS last_seen FROM chb.raw_stop WHERE " + scope
@@ -297,12 +302,12 @@ public class StopViewerRepository {
                     ps.setObject(i + 1, params[i]);
                 }
                 ps.execute();
-                return readDetail(ps, id, quay);
+                return readDetail(ps, id, quay, lang);
             }
         });
     }
 
-    private Optional<StopDetail> readDetail(java.sql.PreparedStatement ps, long id, boolean quay) throws SQLException {
+    private Optional<StopDetail> readDetail(java.sql.PreparedStatement ps, long id, boolean quay, String lang) throws SQLException {
         ResultSet main = ps.getResultSet();
         if (!main.next()) {
             return Optional.empty();
@@ -322,7 +327,7 @@ public class StopViewerRepository {
         String publicCode = main.getString("public_code");
         boolean synthetic = main.getBoolean("is_synthetic");
         boolean wrapper = main.getBoolean("is_wrapper");
-        String path = main.getString("path");
+        String path = path(main, lang);
         String kind = main.getString("kind");
         String transportMode = main.getString("transport_mode");
         List<String> otherModes = textArray(main, "other_transport_modes");
@@ -356,15 +361,33 @@ public class StopViewerRepository {
             ps.getMoreResults();
             ResultSet childRs = ps.getResultSet();
             while (childRs.next()) {
-                children.add(new StopChildSummary(childRs.getLong("id"), childRs.getString("name"),
+                long childId = childRs.getLong("id");
+                String childName = childRs.getString("name");
+                children.add(new StopChildSummary(childId, childName, names.display(childId, lang, childName),
                     childRs.getString("public_code"), childRs.getObject("disabled_at", OffsetDateTime.class),
                     childRs.getBoolean("is_quay"), childRs.getString("kind"), childRs.getString("transport_mode"),
                     textArray(childRs, "other_transport_modes")));
             }
         }
-        return Optional.of(new StopDetail(rowId, name, stopType, publicCode, lat, lon, synthetic, wrapper, quay,
-            parentId, path, attributes, sources, children, reviewedAt, deletedAt, disabledAt, firstSeen, lastSeen,
-            kind, transportMode, otherModes));
+        StopNameCache.Names n = names.get(rowId);
+        return Optional.of(new StopDetail(rowId, name, names.display(rowId, lang, name), stopType, publicCode, lat, lon,
+            synthetic, wrapper, quay, parentId, path, attributes, sources, children, reviewedAt, deletedAt, disabledAt,
+            firstSeen, lastSeen, kind, transportMode, otherModes,
+            n == null ? Map.of() : n.names(), n == null ? null : n.defaultName(), n == null ? null : n.defaultLang(),
+            n == null ? null : n.nameReason()));
+    }
+
+    /** "general > StopPlace [> quay]" met weergavenamen; path_ids/path_names zijn parallelle arrays (NULL = geen parent). */
+    private String path(ResultSet rs, String lang) throws SQLException {
+        Long[] ids = (Long[]) rs.getArray("path_ids").getArray();
+        String[] bare = (String[]) rs.getArray("path_names").getArray();
+        List<String> parts = new ArrayList<>();
+        for (int i = 0; i < ids.length; i++) {
+            if (ids[i] != null) {
+                parts.add(names.display(ids[i], lang, bare[i]));
+            }
+        }
+        return String.join(" > ", parts);
     }
 
     private static List<String> textArray(ResultSet rs, String column) throws SQLException {
@@ -372,22 +395,25 @@ public class StopViewerRepository {
         return array == null ? List.of() : List.of((String[]) array.getArray());
     }
 
-    public List<StopSearchResult> search(String query) {
+    public List<StopSearchResult> search(String query, String lang) {
         // StopPlaces (incl. wrappers, die de naam van hun quay dragen); het pad is "general > StopPlace". Een
         // StopPlace kan meerdere bronnen hebben (meerdere quays/feeds), vandaar de string_agg i.p.v. een join.
+        // Treffer op het kale pad (o.a. MIVB-codes) of op een naam in eender welke taal (namencache, issue #2).
         String sql = """
-            SELECT s.id, concat_ws(' > ', g.name, s.name) AS path,
+            SELECT s.id, ARRAY[g.id, s.id] AS path_ids, ARRAY[g.name, s.name] AS path_names,
                 (SELECT string_agg(ss.source_schema || ':' || ss.source_id, ', ' ORDER BY ss.source_schema, ss.source_id)
                  FROM chb.raw_stop ss JOIN chb.quay q ON q.id = ss.stop_id WHERE q.stop_id = s.id AND q.merged_into_id IS NULL) AS source_codes
             FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
-            WHERE s.merged_into_id IS NULL AND concat_ws(' > ', g.name, s.name) ILIKE ?
+            WHERE s.merged_into_id IS NULL
+            AND (concat_ws(' > ', g.name, s.name) ILIKE ? OR s.id = ANY(?::bigint[]))
             AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
-            ORDER BY path
+            ORDER BY concat_ws(' > ', g.name, s.name)
             LIMIT 50
             """;
+        String nameMatches = names.stopIdsMatching(query).stream().map(String::valueOf).collect(Collectors.joining(",", "{", "}"));
         return jdbcTemplate.query(sql,
-            (rs, rowNum) -> new StopSearchResult(rs.getLong("id"), rs.getString("path"), rs.getString("source_codes")),
-            "%" + query + "%", DELETED_ATTRIBUTE_KEY);
+            (rs, rowNum) -> new StopSearchResult(rs.getLong("id"), path(rs, lang), rs.getString("source_codes")),
+            "%" + query + "%", nameMatches, DELETED_ATTRIBUTE_KEY);
     }
 
     public List<StopHistoryEntry> findHistory(long stopId) {
