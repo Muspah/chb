@@ -13,6 +13,7 @@ import be.gtfsbe.chb.dto.StopHistoryEntry;
 import be.gtfsbe.chb.dto.StopPlaceTypeOption;
 import be.gtfsbe.chb.dto.StopSearchResult;
 import be.gtfsbe.chb.dto.StopSource;
+import be.gtfsbe.chb.dto.TecCityIssue;
 import be.gtfsbe.chb.dto.UnreviewedStop;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -622,6 +623,36 @@ public class StopViewerRepository {
                 rs.getString("name_reason"), textArray(rs, "disagree_langs"), textArray(rs, "feeds"),
                 rs.getString("municipality")),
             feed, feed, limit, offset);
+    }
+
+    /**
+     * Live TEC-quays zonder afleidbare plaats en nog zonder 'city' (chb#1). Bron is chb.tec_city_candidates()
+     * (ndov V115/V136; voor chb_viewer leesbaar sinds V141). Een opgeslagen 'city' haalt de quay uit de lijst.
+     * ~600 rijen, ~0,5 s: geen paginering. De NL-reden wordt een code; het voorstel is de kortere plaats, de
+     * hoofdletterprefix of (alleen hoofdletters) het eerste woord.
+     */
+    public List<TecCityIssue> findTecCityIssues() {
+        return jdbcTemplate.query("""
+            SELECT c.quay_id, c.name,
+                CASE WHEN c.reason LIKE 'kortere voorloop%' THEN 'shorter_prefix'
+                     WHEN c.reason LIKE 'alleen hoofdletters%' THEN 'caps_only'
+                     WHEN c.reason LIKE 'geen hoofdletterprefix%' THEN 'no_caps_prefix'
+                     WHEN c.reason LIKE 'meerwoordige prefix%' THEN 'rare_prefix'
+                     ELSE 'other' END AS reason,
+                CASE WHEN c.reason LIKE 'kortere voorloop%' THEN substring(c.reason from ': (.*)$')
+                     WHEN c.reason LIKE 'alleen hoofdletters%' THEN split_part(c.name, ' ', 1)
+                     WHEN c.reason LIKE 'meerwoordige prefix%'
+                         THEN substring(c.name from '^([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ''./()-]*(?: [A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ''./()-]*)*) ')
+                     END AS suggestion,
+                m.value::jsonb->>'municipality' AS municipality
+            FROM chb.tec_city_candidates() c
+            JOIN chb.quay q ON q.id = c.quay_id AND q.merged_into_id IS NULL AND q.disabled_at IS NULL
+            LEFT JOIN chb.quay_attribute m ON m.quay_id = q.id AND m.key = '_resolved_meta'
+            WHERE c.city IS NULL AND c.stored_city IS NULL
+            ORDER BY c.name, c.quay_id
+            """,
+            (rs, rowNum) -> new TecCityIssue(rs.getLong("quay_id"), rs.getString("name"), rs.getString("reason"),
+                rs.getString("suggestion"), rs.getString("municipality")));
     }
 
     public boolean exists(long id) {

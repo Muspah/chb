@@ -9,6 +9,7 @@ import be.gtfsbe.chb.dto.StopDetail;
 import be.gtfsbe.chb.dto.StopHistoryEntry;
 import be.gtfsbe.chb.dto.StopPlaceTypeOption;
 import be.gtfsbe.chb.dto.StopSearchResult;
+import be.gtfsbe.chb.dto.TecCityIssue;
 import be.gtfsbe.chb.dto.UnreviewedStop;
 import be.gtfsbe.chb.repository.StopViewerRepository;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -112,6 +113,11 @@ public class PublicStopController {
         }
         int cappedLimit = Math.min(Math.max(limit, 1), 200);
         return repository.findNameIssues(reason, feed, cappedLimit, Math.max(offset, 0));
+    }
+
+    @GetMapping("/api/review/tec-cities")
+    public List<TecCityIssue> tecCities() {
+        return repository.findTecCityIssues();
     }
 
     @GetMapping("/api/review/feeds")

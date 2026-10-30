@@ -902,3 +902,23 @@ button, input, select {
   white-space: nowrap;
   border: 0;
 }
+
+.tec-city-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tec-city-name {
+  flex: 1 1 14rem;
+}
+
+.tec-city-form {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.tec-city-row .error-text {
+  flex-basis: 100%;
+}

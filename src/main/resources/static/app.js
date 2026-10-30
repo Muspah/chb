@@ -1352,6 +1352,7 @@ function wireReport() {
   document.getElementById("btn-report").addEventListener("click", openReportDialog);
   document.getElementById("btn-duplicate-names").addEventListener("click", openDuplicateNamesDialog);
   document.getElementById("btn-name-issues").addEventListener("click", openNameIssuesDialog);
+  document.getElementById("btn-tec-cities").addEventListener("click", openTecCitiesDialog);
 }
 
 function applyUnreviewedToggleUi() {
@@ -1597,6 +1598,74 @@ async function openNameIssuesDialog() {
     }
   }).catch(() => {});
   await loadPage(true);
+}
+
+// --- Rapport: TEC-plaatsen (issue #1) ------------------------------------------
+// TEC-quays waarvoor chb.tec_city_candidates() (ndov V115) geen plaats vond. Opslaan zet het
+// quay-attribuut 'city' via de gewone attribuutroute; daarna valt de quay uit de lijst (stored_city).
+
+const TEC_CITY_REASONS = ["shorter_prefix", "caps_only", "rare_prefix", "no_caps_prefix", "other"];
+
+async function openTecCitiesDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.tecCities"))}</h2>
+    <p class="hint-text">${escapeHtml(t("tecCities.hint"))}</p>
+    <div id="names-filters">
+      <select id="tec-reason"><option value="">${escapeHtml(t("tecCities.allReasons"))}</option>${TEC_CITY_REASONS.map((r) =>
+        `<option value="${r}">${escapeHtml(t("tecCities.reason." + r))}</option>`).join("")}</select>
+      <span id="tec-count" class="hint-text"></span>
+    </div>
+    <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="tec-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("tec-close").addEventListener("click", closeDialog);
+  const rows = await apiFetch("/api/review/tec-cities");
+  const reasonSelect = document.getElementById("tec-reason");
+  if (!reasonSelect) {
+    return;
+  }
+
+  function render() {
+    const list = document.getElementById("names-list");
+    const shown = rows.filter((row) => !reasonSelect.value || row.reason === reasonSelect.value);
+    document.getElementById("tec-count").textContent = t("tecCities.count", { n: shown.length });
+    list.innerHTML = shown.length ? "" : `<li class="report-item">${escapeHtml(t("tecCities.none"))}</li>`;
+    for (const row of shown) {
+      const li = document.createElement("li");
+      li.className = "report-item tec-city-row";
+      const sub = [t("tecCities.reason." + row.reason),
+        row.municipality ? t("tecCities.municipality", { name: row.municipality }) : null].filter(Boolean).join(" · ");
+      li.innerHTML = `<div class="tec-city-name">${escapeHtml(row.name)}<div class="report-item-sub">${escapeHtml(sub)}</div></div>
+        <form class="tec-city-form"><input name="city" required value="${escapeHtml(row.suggestion || "")}">
+        <button type="submit">${escapeHtml(t("common.save"))}</button></form>
+        <div class="error-text"></div>`;
+      li.querySelector(".tec-city-name").addEventListener("click", () => {
+        closeDialog();
+        selectStop(row.quayId);
+      });
+      li.querySelector("form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const errorEl = li.querySelector(".error-text");
+        errorEl.textContent = "";
+        try {
+          await apiFetch("/api/stops/" + row.quayId + "/attributes/city", {
+            method: "PUT",
+            body: JSON.stringify({ value: event.target.elements.city.value.trim() }),
+          });
+          rows.splice(rows.indexOf(row), 1);
+          render();
+        } catch (e) {
+          showActionError(errorEl, e);
+        }
+      });
+      list.appendChild(li);
+    }
+  }
+
+  reasonSelect.addEventListener("change", render);
+  render();
 }
 
 // --- Generieke dialoog -------------------------------------------------------
