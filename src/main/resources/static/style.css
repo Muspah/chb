@@ -327,11 +327,14 @@ button, input, select {
 }
 
 .stop-marker span {
-  display: block;
-  width: 14px;
-  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: #ffffff;
   border-radius: 50%;
-  border: 2px solid #ffffff;
+  border: 1.5px solid #ffffff;
   box-sizing: border-box;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
@@ -595,6 +598,12 @@ button, input, select {
   color: var(--success-600);
 }
 
+.badge-mode-bus { background: rgba(42, 120, 214, 0.14); color: var(--brand-800); }
+.badge-mode-tram { background: rgba(235, 104, 52, 0.14); color: #a84a1f; }
+.badge-mode-metro { background: rgba(120, 60, 180, 0.14); color: #5b2d91; }
+.badge-mode-rail { background: rgba(31, 138, 83, 0.14); color: var(--success-600); }
+.badge-mode-none { background: none; border: 1px dashed var(--danger-700); color: var(--danger-700); }
+
 /* [hidden] uit het user-agent-stylesheet verliest anders van onze eigen "display"-regel hieronder
    (auteurs-CSS wint altijd van user-agent-CSS, ongeacht specificiteit) — zonder deze regel blijft
    een element met het hidden-attribuut toch zichtbaar zodra we er zelf "display" op zetten. */
@@ -750,7 +759,8 @@ button, input, select {
   justify-content: flex-end;
 }
 
-.error-text {
+.error-text,
+#dialog-box p.error-text {
   color: var(--danger-600);
   font-size: 0.83rem;
   font-weight: 500;

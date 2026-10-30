@@ -351,9 +351,9 @@ function stopIcon(props) {
   const className = props.disabledAt ? "stop-marker stop-marker-disabled" : "stop-marker";
   return L.divIcon({
     className,
-    html: `<span style="background:${color}"></span>`,
-    iconSize: [14, 14],
-    iconAnchor: [7, 7],
+    html: `<span style="background:${color}">${modeIcon(props.transportMode, 12, 2.5)}</span>`,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
   });
 }
 
@@ -559,6 +559,27 @@ function dominantMode(modes) {
 function modesText(d) {
   if (!d.transportMode) return "-";
   return d.otherTransportModes?.length ? `${d.transportMode} (+ ${d.otherTransportModes.join(", ")})` : d.transportMode;
+}
+
+const MODE_ICONS = {
+  bus: '<rect x="5" y="4" width="14" height="14" rx="2"/><path d="M5 11h14M8 18v2M16 18v2"/><circle cx="8.5" cy="14.5" r=".5"/><circle cx="15.5" cy="14.5" r=".5"/>',
+  tram: '<rect x="6" y="7" width="12" height="11" rx="2"/><path d="M6 12h12M8 21l2-3M16 21l-2-3M9 3h6M12 3v4"/>',
+  metro: '<circle cx="12" cy="12" r="9"/><path d="M8 16V8l4 5 4-5v8"/>',
+  rail: '<path d="M8 3v18M16 3v18M5 7h14M5 12h14M5 17h14"/>',
+};
+
+function modeIcon(mode, size, strokeWidth) {
+  const icon = MODE_ICONS[mode];
+  return icon ? `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg>` : "";
+}
+
+function modeBadge(mode) {
+  return `<span class="badge badge-mode${MODE_ICONS[mode] ? " badge-mode-" + mode : ""}">${modeIcon(mode, 14, 2)}${escapeHtml(mode)}</span>`;
+}
+
+function modeBadges(d) {
+  if (!d.transportMode) return `<span class="badge badge-mode-none">${escapeHtml(t("group.noMode"))}</span>`;
+  return [d.transportMode, ...(d.otherTransportModes || [])].map(modeBadge).join(" ");
 }
 
 function kindBadge(kind) {
@@ -1148,14 +1169,21 @@ async function openGroupDialog() {
   }
   const groupsQuays = details.every(isLoose) && quayIds.every((q) => q != null);
   const groupIds = groupsQuays ? quayIds : picked;
-  // Een general krijgt zijn modus uit de kinderen (V138), maar het type kiest de curator: stel het voor.
-  const modes = groupsQuays ? [] : [...new Set(details.flatMap((d) => [d.transportMode, ...(d.otherTransportModes || [])]).filter(Boolean))];
+  // De modus van een wrapper kan afwijken van die van zijn quay; gegroepeerd wordt de quay, dus die telt.
+  const modeHolder = (d) => (groupsQuays && !d.isQuay ? d.children.find((c) => c.id === resolveQuayId(d)) : d);
+  // Quays: hoofdmodus per quay, zoals chb.stop_place_mode_mismatch (ndov V149). Een general krijgt zijn modus
+  // uit de kinderen (V138), maar het type kiest de curator: stel het voor.
+  const modes = [...new Set(details.flatMap((d) => {
+    const h = modeHolder(d);
+    return groupsQuays ? [h.transportMode] : [h.transportMode, ...(h.otherTransportModes || [])];
+  }).filter(Boolean))];
   const mode = dominantMode(modes);
-  const suggestedType = MODE_TO_STOP_TYPE[mode] || null;
+  const modeConflict = groupsQuays && modes.length > 1;
+  const suggestedType = modeConflict ? null : MODE_TO_STOP_TYPE[mode] || null;
   const listHtml = details.map((d) => {
     const sourceCodes = d.sources.map((s) => `${s.sourceSchema}:${s.sourceId}`).join(", ");
     return `
-    <li>${escapeHtml(d.displayName)}${d.publicCode ? " (" + escapeHtml(d.publicCode) + ")" : ""}
+    <li>${modeBadges(modeHolder(d))} ${escapeHtml(d.displayName)}${d.publicCode ? " (" + escapeHtml(d.publicCode) + ")" : ""}
       ${sourceCodes ? ` <span class="search-result-code">${escapeHtml(sourceCodes)}</span>` : ""}</li>
   `;
   }).join("");
@@ -1163,15 +1191,18 @@ async function openGroupDialog() {
   showDialog(`
     <h2>${escapeHtml(t("toolbar.groupStops"))}</h2>
     <p>${escapeHtml(t(groupsQuays ? "group.explainQuays" : "group.explainStopPlaces", { count: picked.length }))}</p>
-    ${modes.length === 1 ? `<p class="error-text">${escapeHtml(t("group.singleModeWarn", { mode }))}</p>` : ""}
-    ${groupsQuays ? "" : `<p class="hint-text">${escapeHtml(t("group.typeRule"))}${suggestedType ? " " + escapeHtml(t("group.typeSuggested", { mode, type: stopTypeLabel(suggestedType) })) : ""}</p>`}
+    ${!groupsQuays && modes.length === 1 ? `<p class="error-text">${escapeHtml(t("group.singleModeWarn", { mode }))}</p>` : ""}
+    ${modeConflict ? `<p class="error-text">${escapeHtml(t("group.modeConflictWarn", { modes: modes.join(", ") }))}</p>` : ""}
+    ${groupsQuays
+      ? (suggestedType ? `<p class="hint-text">${escapeHtml(t("group.quayTypeSuggested", { mode, type: stopTypeLabel(suggestedType) }))}</p>` : "")
+      : `<p class="hint-text">${escapeHtml(t("group.typeRule"))}${suggestedType ? " " + escapeHtml(t("group.typeSuggested", { mode, type: stopTypeLabel(suggestedType) })) : ""}</p>`}
     <ul>${listHtml}</ul>
     <form class="inline-form" id="group-form">
       <label>${escapeHtml(t("group.nameLabel"))}
         <input name="name" value="${escapeHtml(defaultName)}" required>
       </label>
       <label>${escapeHtml(t("group.typeLabel"))}
-        <select name="stopType">${stopTypeOptionsHtml(suggestedType, false)}</select>
+        <select name="stopType" required>${suggestedType ? "" : `<option value="" selected disabled>${escapeHtml(t("group.typeChoose"))}</option>`}${stopTypeOptionsHtml(suggestedType, false)}</select>
       </label>
       <span class="error-text" id="group-error"></span>
       <div class="dialog-actions">

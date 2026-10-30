@@ -106,7 +106,7 @@ public class StopViewerRepository {
     // chb.stop.geom (db/add_stop_geom_postgis.sql) — zonder deze bbox-filter (en zonder cap
     // hieronder) laadt de kaart bij elke actie de volledige tabel, wat >1s duurde.
     private static final String MAP_FEATURES_BASE_SQL = """
-        SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at,
+        SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at, s.transport_mode,
                CASE WHEN NOT s.is_wrapper THEN (
                    SELECT ST_AsText(ST_Buffer(ST_ConvexHull(ST_Collect(q.geom))::geography, 8)::geometry, 6)
                    FROM (SELECT s.id AS sid UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = s.id) x
@@ -178,7 +178,7 @@ public class StopViewerRepository {
                 .map(f -> String.valueOf(f.properties().get("id"))).collect(Collectors.joining(",", "{", "}"));
         if (ids.equals("{}")) return List.of();
         return jdbcTemplate.query("""
-            SELECT q.id, q.name, q.public_code, q.lat, q.lon, q.stop_id, q.is_synthetic, q.disabled_at
+            SELECT q.id, q.name, q.public_code, q.lat, q.lon, q.stop_id, q.is_synthetic, q.disabled_at, q.transport_mode
             FROM (SELECT unnest(?::bigint[]) AS sid
                   UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = ANY(?::bigint[])) x
             JOIN chb.quay q ON q.stop_id = x.sid
@@ -192,6 +192,7 @@ public class StopViewerRepository {
             p.put("isSynthetic", rs.getBoolean("is_synthetic"));
             p.put("isWrapper", false);
             p.put("isQuay", true);
+            p.put("transportMode", rs.getString("transport_mode"));
             p.put("disabledAt", rs.getObject("disabled_at", OffsetDateTime.class));
             return new GeoJsonFeature(GeoJsonGeometry.point(rs.getDouble("lon"), rs.getDouble("lat")), p);
         }, ids, ids);
@@ -219,6 +220,7 @@ public class StopViewerRepository {
         properties.put("parentId", rs.wasNull() ? null : parentId);
         properties.put("isSynthetic", rs.getBoolean("is_synthetic"));
         properties.put("isWrapper", rs.getBoolean("is_wrapper"));
+        properties.put("transportMode", rs.getString("transport_mode"));
         properties.put("disabledAt", rs.getObject("disabled_at", OffsetDateTime.class));
         String areaWkt = rs.getString("area_wkt");
         if (areaWkt != null && areaWkt.startsWith("POLYGON")) {
