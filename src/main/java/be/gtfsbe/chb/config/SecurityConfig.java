@@ -90,6 +90,11 @@ public class SecurityConfig {
             // stuurt).
             .csrf(CsrfConfigurer::spa)
             .addFilterAfter(new CsrfCookieFilter(), BasicAuthenticationFilter.class)
+            // style-src-attr: de markers en enkele tabelrijen hebben een inline style-attribuut.
+            .headers(headers -> headers.contentSecurityPolicy(csp -> csp.policyDirectives(
+                "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' https://unpkg.com; "
+                    + "style-src-attr 'unsafe-inline'; img-src 'self' data: https://unpkg.com https://*.tile.openstreetmap.org; "
+                    + "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")))
             .oauth2Login(oauth2 -> oauth2
                 // alwaysUse=true: zonder dit wint Spring Security's RequestCache na login van
                 // deze default zodra er een "opgeslagen request" bestaat — en die wordt ook

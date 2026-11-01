@@ -404,7 +404,7 @@ async function loadStops() {
         feature.geometry.coordinates[0].map(([x, y]) => [y, x]),
         { color: "#eb6834", weight: 2, fillOpacity: 0.15, bubblingMouseEvents: false },
       );
-      area.bindTooltip(name);
+      area.bindTooltip(escapeHtml(name)); // Leaflet zet een string als innerHTML
       area.on("click", () => onMarkerClick(props.id));
       area.addTo(state.areaLayer);
       state.markersById.set(props.id, area);
@@ -429,7 +429,7 @@ async function loadStops() {
     const tooltip = props.disabledAt
       ? `${pickLabel(props.id)} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
       : pickLabel(props.id);
-    marker.bindTooltip(tooltip);
+    marker.bindTooltip(escapeHtml(tooltip));
     marker.on("click", () => onMarkerClick(props.id));
     markers.push(marker);
     state.markersById.set(props.id, marker);
