@@ -135,12 +135,26 @@ function renderAuthArea() {
     userInfo.textContent = state.me.name || state.me.email || t("auth.signedIn");
     loginLink.hidden = true;
     logoutForm.hidden = false;
-    document.getElementById("logout-csrf").value = getCookie("XSRF-TOKEN") || "";
   } else {
     userInfo.hidden = true;
     loginLink.hidden = false;
     logoutForm.hidden = true;
   }
+}
+
+// Via de header en niet als formulierveld: de SPA-preset verwacht in een veld een gemaskeerd token,
+// de cookie bevat het ruwe token (gaf een 403).
+function wireLogout() {
+  document.getElementById("logout-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const response = await fetch("/logout", {
+      method: "POST",
+      headers: { "X-XSRF-TOKEN": getCookie("XSRF-TOKEN") || "" },
+      credentials: "same-origin",
+    });
+    if (response.ok) location.assign("/");
+    else alert(t("auth.signOutFailed"));
+  });
 }
 
 // --- Taal -----------------------------------------------------------------
@@ -1948,6 +1962,7 @@ async function init() {
   applyStaticTranslations(document);
   applyLangSwitchUi();
   wireLangSwitch();
+  wireLogout();
   initMap();
   wireSearch();
   wireCreateNode();
