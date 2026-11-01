@@ -5,6 +5,7 @@ import be.gtfsbe.chb.dto.GeoJsonFeature;
 import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
 import be.gtfsbe.chb.dto.GeoJsonGeometry;
 import be.gtfsbe.chb.dto.MapBounds;
+import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
 import be.gtfsbe.chb.dto.ReviewStats;
 import be.gtfsbe.chb.dto.StopChildSummary;
@@ -655,6 +656,13 @@ public class StopViewerRepository {
             """,
             (rs, rowNum) -> new TecCityIssue(rs.getLong("quay_id"), rs.getString("name"), rs.getString("reason"),
                 rs.getString("suggestion"), rs.getString("municipality")));
+    }
+
+    /** Controleview uit ndov V145 (#76): hoort leeg te zijn, dus geen paginering. */
+    public List<MultimodeQuay> findMultimodeQuays() {
+        return jdbcTemplate.query("SELECT quay_id, name, source_schemas, modes FROM chb.multimode_quay ORDER BY name, quay_id",
+            (rs, rowNum) -> new MultimodeQuay(rs.getLong("quay_id"), rs.getString("name"),
+                textArray(rs, "source_schemas"), textArray(rs, "modes")));
     }
 
     public boolean exists(long id) {

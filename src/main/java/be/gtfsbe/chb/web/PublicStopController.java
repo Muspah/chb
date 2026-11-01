@@ -1,6 +1,7 @@
 package be.gtfsbe.chb.web;
 
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
+import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
 import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
 import be.gtfsbe.chb.dto.MapBounds;
@@ -118,6 +119,11 @@ public class PublicStopController {
     @GetMapping("/api/review/tec-cities")
     public List<TecCityIssue> tecCities() {
         return repository.findTecCityIssues();
+    }
+
+    @GetMapping("/api/review/multimode-quays")
+    public List<MultimodeQuay> multimodeQuays() {
+        return repository.findMultimodeQuays();
     }
 
     @GetMapping("/api/review/feeds")

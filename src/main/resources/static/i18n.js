@@ -268,6 +268,9 @@ const translations = {
     "tecCities.municipality": "municipality: {name}",
     "tecCities.none": "Nothing left.",
     "tecCities.count": "{n} quays",
+    "toolbar.multimodeQuays": "Multi-mode quays",
+    "multimodeQuays.hint": "Quays with more than one mode. Should be empty: De Lijn quays are split per mode on import. A quay stays listed if its operator is not split, or if a curator merged the quays of one stop. Click a row to open the quay.",
+    "multimodeQuays.none": "None: every quay has one mode.",
   },
 
   nl: {
@@ -455,6 +458,9 @@ const translations = {
     "tecCities.municipality": "gemeente: {name}",
     "tecCities.none": "Niets meer te doen.",
     "tecCities.count": "{n} quays",
+    "toolbar.multimodeQuays": "Quays met meerdere modi",
+    "multimodeQuays.hint": "Quays met meer dan één modus. Hoort leeg te zijn: De Lijn-quays worden bij de import per modus gesplitst. Een quay staat hier als zijn vervoerder niet gesplitst wordt, of als een curator de quays van één halte samenvoegde. Klik op een regel om de quay te openen.",
+    "multimodeQuays.none": "Geen: elke quay heeft één modus.",
   },
 
   de: {
@@ -642,6 +648,9 @@ const translations = {
     "tecCities.municipality": "Gemeinde: {name}",
     "tecCities.none": "Nichts mehr zu tun.",
     "tecCities.count": "{n} Quays",
+    "toolbar.multimodeQuays": "Quays mit mehreren Modi",
+    "multimodeQuays.hint": "Quays mit mehr als einem Verkehrsmittel. Die Liste sollte leer sein: De-Lijn-Quays werden beim Import pro Verkehrsmittel getrennt. Ein Quay steht hier, wenn sein Betreiber nicht getrennt wird oder ein Kurator die Quays einer Haltestelle zusammengeführt hat. Zeile anklicken, um den Quay zu öffnen.",
+    "multimodeQuays.none": "Keine: Jeder Quay hat ein Verkehrsmittel.",
   },
 
   fr: {
@@ -829,6 +838,9 @@ const translations = {
     "tecCities.municipality": "commune : {name}",
     "tecCities.none": "Plus rien à faire.",
     "tecCities.count": "{n} quais",
+    "toolbar.multimodeQuays": "Quais multimodes",
+    "multimodeQuays.hint": "Quais ayant plus d'un mode. Cette liste devrait être vide : les quais De Lijn sont séparés par mode à l'import. Un quai apparaît ici si son exploitant n'est pas séparé, ou si un curateur a fusionné les quais d'un même arrêt. Cliquez sur une ligne pour ouvrir le quai.",
+    "multimodeQuays.none": "Aucun : chaque quai a un seul mode.",
   },
 };
 

@@ -345,6 +345,14 @@ function wireMapReloadOnMove() {
 // onderscheidbaar bij kleurenblindheid) i.p.v. de vorige laagverzadigde blauw/oker-tint die
 // wegviel tegen de OSM-ondergrond. Een witte rand (i.p.v. een donkerdere tint van dezelfde kleur)
 // zorgt dat de stip blijft opvallen ongeacht wat eronder ligt (beige land, groen park, blauw water).
+// Twee quays op dezelfde plek (De Lijn bus + tram, ndov#76) hebben dezelfde naam: de modus onderscheidt ze.
+function pickLabel(id) {
+  const props = state.stopsById.get(id);
+  if (!props) return id;
+  const name = props.name || t("map.stopFallbackName", { id });
+  return props.isQuay && props.transportMode ? `${name} (${props.transportMode})` : name;
+}
+
 function stopIcon(props) {
   // Oranje = curated groepering; een wrapper is technisch ook een StopPlace maar visueel gewoon één halte (quay) = blauw.
   const color = props.isSynthetic && !props.isWrapper && !props.isQuay ? "#eb6834" : "#2a78d6";
@@ -416,8 +424,8 @@ async function loadStops() {
       });
     }
     const tooltip = props.disabledAt
-      ? `${props.name || t("map.stopFallbackName", { id: props.id })} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
-      : props.name || t("map.stopFallbackName", { id: props.id });
+      ? `${pickLabel(props.id)} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
+      : pickLabel(props.id);
     marker.bindTooltip(tooltip);
     marker.on("click", () => onMarkerClick(props.id));
     markers.push(marker);
@@ -1135,7 +1143,7 @@ function updateGroupStatus() {
   if (picked.length === 0) {
     status.textContent = t("group.pickHint");
   } else {
-    const names = picked.map((id) => state.stopsById.get(id)?.name || id).join(", ");
+    const names = picked.map(pickLabel).join(", ");
     status.textContent = t("group.pickedCount", { count: picked.length, names });
   }
   confirmBtn.hidden = picked.length < 2;
@@ -1261,7 +1269,7 @@ function renderMergeStatus() {
   if (state.merge.sourceId == null) {
     status.textContent = t("merge.startHint");
   } else {
-    const name = state.stopsById.get(state.merge.sourceId)?.name || state.merge.sourceId;
+    const name = pickLabel(state.merge.sourceId);
     status.textContent = t("merge.sourcePicked", { name });
   }
 }
@@ -1384,6 +1392,7 @@ function wireReport() {
   document.getElementById("btn-duplicate-names").addEventListener("click", openDuplicateNamesDialog);
   document.getElementById("btn-name-issues").addEventListener("click", openNameIssuesDialog);
   document.getElementById("btn-tec-cities").addEventListener("click", openTecCitiesDialog);
+  document.getElementById("btn-multimode-quays").addEventListener("click", openMultimodeQuaysDialog);
 }
 
 function applyUnreviewedToggleUi() {
@@ -1697,6 +1706,36 @@ async function openTecCitiesDialog() {
 
   reasonSelect.addEventListener("change", render);
   render();
+}
+
+// chb.multimode_quay (ndov V145): hoort leeg te zijn. Blijft staan bij een vervoerder zonder splitsing
+// of als een curator de quays van één halte samenvoegde.
+async function openMultimodeQuaysDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.multimodeQuays"))}</h2>
+    <p class="hint-text">${escapeHtml(t("multimodeQuays.hint"))}</p>
+    <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="multimode-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("multimode-close").addEventListener("click", closeDialog);
+  const rows = await apiFetch("/api/review/multimode-quays");
+  const list = document.getElementById("names-list");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = rows.length ? "" : `<li class="report-item">${escapeHtml(t("multimodeQuays.none"))}</li>`;
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.className = "report-item";
+    li.innerHTML = `${escapeHtml(row.name)}<div class="report-item-sub">${escapeHtml(row.modes.join(" + "))} · ${escapeHtml(row.sourceSchemas.join(", "))}</div>`;
+    li.addEventListener("click", () => {
+      closeDialog();
+      selectStop(row.quayId);
+    });
+    list.appendChild(li);
+  }
 }
 
 // --- Generieke dialoog -------------------------------------------------------
