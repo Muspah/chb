@@ -362,12 +362,16 @@ function wireMapReloadOnMove() {
 // onderscheidbaar bij kleurenblindheid) i.p.v. de vorige laagverzadigde blauw/oker-tint die
 // wegviel tegen de OSM-ondergrond. Een witte rand (i.p.v. een donkerdere tint van dezelfde kleur)
 // zorgt dat de stip blijft opvallen ongeacht wat eronder ligt (beige land, groen park, blauw water).
-// Twee quays op dezelfde plek (De Lijn bus + tram, ndov#76) hebben dezelfde naam: de modus onderscheidt ze.
+function stopName(props) {
+  return props.name || t("map.stopFallbackName", { id: props.id });
+}
+
+// Twee quays op dezelfde plek (De Lijn bus + tram, ndov#76) hebben dezelfde naam: in de keuzetekst staat
+// geen icoon, dus daar onderscheidt de modus ze. Niet in de tooltip: daar staat de echte naam, de marker toont het icoon.
 function pickLabel(id) {
   const props = state.stopsById.get(id);
   if (!props) return id;
-  const name = props.name || t("map.stopFallbackName", { id });
-  return props.isQuay && props.transportMode ? `${name} (${props.transportMode})` : name;
+  return props.isQuay && props.transportMode ? `${stopName(props)} (${props.transportMode})` : stopName(props);
 }
 
 function stopIcon(props) {
@@ -413,12 +417,11 @@ async function loadStops() {
     const props = feature.properties;
     state.stopsById.set(props.id, props);
     if (feature.geometry.type === "Polygon") {
-      const name = props.name || t("map.stopFallbackName", { id: props.id });
       const area = L.polygon(
         feature.geometry.coordinates[0].map(([x, y]) => [y, x]),
         { color: "#eb6834", weight: 2, fillOpacity: 0.15, bubblingMouseEvents: false },
       );
-      area.bindTooltip(escapeHtml(name)); // Leaflet zet een string als innerHTML
+      area.bindTooltip(escapeHtml(stopName(props))); // Leaflet zet een string als innerHTML
       area.on("click", () => onMarkerClick(props.id));
       area.addTo(state.areaLayer);
       state.markersById.set(props.id, area);
@@ -441,8 +444,8 @@ async function loadStops() {
       });
     }
     const tooltip = props.disabledAt
-      ? `${pickLabel(props.id)} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
-      : pickLabel(props.id);
+      ? `${stopName(props)} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
+      : stopName(props);
     marker.bindTooltip(escapeHtml(tooltip));
     marker.on("click", () => onMarkerClick(props.id));
     markers.push(marker);
