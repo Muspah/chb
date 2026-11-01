@@ -154,13 +154,13 @@ button, input, select {
 
 #search-results {
   position: absolute;
-  top: calc(100% + 0.4rem);
+  top: 100%;
   left: 0;
   right: 0;
   background: var(--surface-0);
   color: var(--ink-900);
   list-style: none;
-  margin: 0;
+  margin: 0.4rem 0 0;
   padding: 0.25rem;
   max-height: 320px;
   overflow-y: auto;
@@ -616,6 +616,9 @@ button, input, select {
 /* --- Toolbar ----------------------------------------------------------------- */
 
 #toolbar {
+  /* Boven de Leaflet-lagen (tot 1000), anders valt het uitgeklapte rapportenmenu achter de kaart. */
+  position: relative;
+  z-index: 1001;
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -635,6 +638,52 @@ button, input, select {
 
 .toolbar-group-end {
   margin-left: auto;
+}
+
+#reports-menu {
+  position: relative;
+}
+
+#reports-menu summary {
+  list-style: none;
+}
+
+#reports-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+#reports-menu[open] summary {
+  background: var(--surface-100);
+}
+
+.reports-menu-items {
+  position: absolute;
+  right: 0;
+  /* Geen calc(): YUI Compressor (build) haalt de spaties rond + weg en maakt hem ongeldig. */
+  bottom: 100%;
+  margin-bottom: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem;
+  background: var(--surface-0);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 -4px 16px rgba(13, 36, 64, 0.12);
+}
+
+.reports-menu-items .tbtn {
+  border-color: transparent;
+  background: transparent;
+  padding: 0.45rem 0.85rem;
+}
+
+.reports-menu-items .tbtn:hover {
+  background: var(--surface-100);
+}
+
+/* Ook smal: in het menu is er plek voor de tekst. */
+.reports-menu-items .tbtn-label {
+  display: inline;
 }
 
 #toolbar-status {

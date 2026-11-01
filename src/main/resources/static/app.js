@@ -1393,6 +1393,14 @@ function wireReport() {
   document.getElementById("btn-name-issues").addEventListener("click", openNameIssuesDialog);
   document.getElementById("btn-tec-cities").addEventListener("click", openTecCitiesDialog);
   document.getElementById("btn-multimode-quays").addEventListener("click", openMultimodeQuaysDialog);
+  // Dicht bij een klik op een rapport of ernaast, en met Escape.
+  const menu = document.getElementById("reports-menu");
+  document.addEventListener("click", (event) => {
+    if (!menu.contains(event.target) || event.target.closest(".reports-menu-items")) menu.open = false;
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") menu.open = false;
+  });
 }
 
 function applyUnreviewedToggleUi() {
