@@ -554,7 +554,8 @@ async function selectStop(id) {
 function escapeHtml(value) {
   const div = document.createElement("div");
   div.textContent = value == null ? "" : String(value);
-  return div.innerHTML;
+  // innerHTML laat aanhalingstekens staan, en de uitvoer komt ook in attributen terecht.
+  return div.innerHTML.replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
 // chb.mode_dominance_rank (ndov V98); Business Rules CHB §7: het type van een general volgt de dominante modus.
