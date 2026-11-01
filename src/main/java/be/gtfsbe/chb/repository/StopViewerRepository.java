@@ -682,11 +682,18 @@ public class StopViewerRepository {
                 textArray(rs, "source_schemas"), textArray(rs, "modes")));
     }
 
-    /** Controleview uit ndov V149 (#78): hoort leeg te zijn, dus geen paginering. */
+    /** Controleviews uit ndov V149 (#78) en V144 (#75): horen leeg te zijn, dus geen paginering. Een quay in beide is één rij. */
     public List<ModeMismatch> findModeMismatches() {
-        return jdbcTemplate.query("SELECT quay_id, name, quay_mode, stop_id, stop_mode, is_wrapper FROM chb.stop_place_mode_mismatch ORDER BY name, quay_id",
-            (rs, rowNum) -> new ModeMismatch(rs.getLong("quay_id"), rs.getString("name"), rs.getString("quay_mode"),
-                rs.getLong("stop_id"), rs.getString("stop_mode"), rs.getBoolean("is_wrapper")));
+        String sql = """
+            SELECT quay_id, name, stop_id, coalesce(p.quay_mode, b.quay_mode) AS quay_mode,
+                   coalesce(p.stop_mode, b.stop_mode) AS stop_mode, coalesce(p.is_wrapper, false) AS is_wrapper, b.source_station
+            FROM chb.stop_place_mode_mismatch p
+            FULL JOIN chb.source_station_mode_mismatch b USING (quay_id, name, stop_id)
+            ORDER BY name, quay_id
+            """;
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new ModeMismatch(rs.getLong("quay_id"), rs.getString("name"),
+            rs.getString("quay_mode"), rs.getLong("stop_id"), rs.getString("stop_mode"), rs.getBoolean("is_wrapper"),
+            rs.getString("source_station")));
     }
 
     /** Voorstellen uit ndov V143 (#67). Geen paginering: ~750 rijen in ~0,2 s; de lijst filtert client-side. */

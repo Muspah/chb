@@ -38,6 +38,7 @@ async function apiFetch(url, options = {}) {
     if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
   }
   const response = await fetch(url, Object.assign({}, options, { headers, credentials: "same-origin" }));
+  if (response.ok && options.method && options.method !== "GET") refreshModeMismatches().catch(console.error);
   if (response.status === 204) return null;
   if (!response.ok) {
     let message = response.statusText;
@@ -95,6 +96,7 @@ async function loadMe() {
   state.me = await apiFetch("/api/me");
   renderAuthArea();
   document.getElementById("toolbar").hidden = !state.me.curator;
+  if (state.me.curator) refreshModeMismatches().catch(console.error);
 }
 
 // --- StopPlaceType (NeTEx StopTypeEnumeration, chb.stop_place_type) -----
@@ -157,6 +159,7 @@ function refreshDynamicUiForLangChange() {
   applyLangSwitchUi();
   applyUnreviewedToggleUi();
   applyDisabledToggleUi();
+  renderModeMismatchCount();
   if (state.group.active) updateGroupStatus();
   if (state.merge.active) renderMergeStatus();
   // Haltenamen hangen van de taal af: kaart en paneel opnieuw ophalen.
@@ -1848,7 +1851,30 @@ async function openGroupCandidatesDialog() {
   if (document.getElementById("candidates-search")) render();
 }
 
-// chb.stop_place_mode_mismatch (ndov V149): hoort leeg te zijn.
+// Het enige signaal voor deze afwijkingen (ndov#75): de teller staat op de altijd zichtbare menuknop.
+// Ververst bij het laden en na elke schrijfactie; een import zie je pas na herladen.
+async function refreshModeMismatches() {
+  const rows = await apiFetch("/api/review/mode-mismatches");
+  state.modeMismatchCount = rows.length;
+  renderModeMismatchCount();
+  return rows;
+}
+
+function renderModeMismatchCount() {
+  const n = state.modeMismatchCount || 0;
+  for (const badge of document.querySelectorAll(".mode-mismatch-count")) {
+    badge.textContent = n;
+    badge.hidden = n === 0;
+  }
+  // De aria-label van de knop gaat voor op zijn tekst, dus de teller moet er ook in.
+  const reports = t("toolbar.reports");
+  const label = n ? `${reports} (${t("modeMismatches.count", { n })})` : reports;
+  const summary = document.querySelector("#reports-menu summary");
+  summary.setAttribute("aria-label", label);
+  summary.title = n ? label : "";
+}
+
+// chb.stop_place_mode_mismatch (V149) en chb.source_station_mode_mismatch (V144): horen leeg te zijn.
 async function openModeMismatchesDialog() {
   showDialog(`
     <h2>${escapeHtml(t("toolbar.modeMismatches"))}</h2>
@@ -1859,7 +1885,7 @@ async function openModeMismatchesDialog() {
     </div>
   `);
   document.getElementById("mode-mismatches-close").addEventListener("click", closeDialog);
-  const rows = await apiFetch("/api/review/mode-mismatches");
+  const rows = await refreshModeMismatches();
   const list = document.getElementById("names-list");
   if (!list) {
     return;
@@ -1869,6 +1895,7 @@ async function openModeMismatchesDialog() {
     const parts = [t("modeMismatches.row", { quay: row.quayId, quayMode: row.quayMode || t("modeMismatches.mixedOrNoTrips"),
       stop: row.stopId, stopMode: row.stopMode || t("group.noMode") })];
     if (row.isWrapper) parts.push(t("kind.wrapper"));
+    if (row.sourceStation) parts.push(`${t("panel.sourceStation")}: ${row.sourceStation}`);
     const li = document.createElement("li");
     li.className = "report-item";
     li.innerHTML = `${escapeHtml(row.name)}<div class="report-item-sub">${escapeHtml(parts.join(" · "))}</div>`;

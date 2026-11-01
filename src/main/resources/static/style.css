@@ -614,6 +614,7 @@ button, input, select {
    een element met het hidden-attribuut toch zichtbaar zodra we er zelf "display" op zetten. */
 #toolbar[hidden],
 #dialog-overlay[hidden],
+.mode-mismatch-count[hidden],
 .tbtn[hidden] {
   display: none;
 }
@@ -689,6 +690,19 @@ button, input, select {
 /* Ook smal: in het menu is er plek voor de tekst. */
 .reports-menu-items .tbtn-label {
   display: inline;
+}
+
+.mode-mismatch-count {
+  display: inline-block;
+  min-width: 1.25rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: #c62828;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.25rem;
+  text-align: center;
 }
 
 #toolbar-status {
