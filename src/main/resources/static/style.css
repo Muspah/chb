@@ -839,6 +839,58 @@ button, input, select {
   font-size: 0.8rem;
 }
 
+.help-link {
+  display: inline-block;
+  width: 1.15em;
+  height: 1.15em;
+  line-height: 1.15em;
+  border-radius: 50%;
+  background: var(--surface-border);
+  color: var(--ink-700);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+  vertical-align: middle;
+}
+
+.help-link:hover,
+.help-link:focus-visible {
+  background: var(--brand-500);
+  color: white;
+}
+
+#help-dialog {
+  max-width: 560px;
+  width: 90%;
+  max-height: 80vh;
+  padding: 1.5rem;
+  border: 0;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  color: var(--ink-700);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+#help-dialog::backdrop {
+  background: rgba(13, 24, 40, 0.5);
+}
+
+#help-dialog h2 {
+  margin-top: 0;
+  font-size: 1.15rem;
+  color: var(--brand-900);
+}
+
+#help-body ul {
+  padding-left: 1.2rem;
+}
+
+#help-body li {
+  margin-bottom: 0.5rem;
+}
+
 #report-stats {
   font-weight: 500;
 }

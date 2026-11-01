@@ -679,7 +679,7 @@ function renderPanel(detail, history) {
 
   const wrapperSection = state.me.curator && detail.isWrapper ? `
     <section>
-      <h3>${escapeHtml(t("panel.wrapperHeading"))}</h3>
+      <h3>${escapeHtml(t("panel.wrapperHeading"))} ${helpLink("general")}</h3>
       <p class="hint-text">${escapeHtml(t("panel.wrapperHint"))}</p>
       <button class="secondary" id="promote-btn">${escapeHtml(t("panel.promote"))}</button>
     </section>` : "";
@@ -696,7 +696,7 @@ function renderPanel(detail, history) {
     <div class="path">${parentLine}</div>
     <div class="badge-row">${typeBadge}${kindBadge(detail.kind)}${autoBadge}${reviewBadge}${disabledBadge}</div>
     ${detail.kind === "general" && !detail.transportMode ? `<p class="error-text">${escapeHtml(t("panel.generalNoMode"))}</p>` : ""}
-    ${detail.kind === "general" && detail.transportMode && !detail.otherTransportModes?.length ? `<p class="error-text">${escapeHtml(t("panel.generalSingleMode"))}</p>` : ""}
+    ${detail.kind === "general" && detail.transportMode && !detail.otherTransportModes?.length ? `<p class="error-text">${escapeHtml(t("panel.generalSingleMode"))} ${helpLink("general")}</p>` : ""}
     <dl>
       <dt>${escapeHtml(t("panel.transportMode"))}</dt><dd>${escapeHtml(modesText(detail))}</dd>
       <dt>${escapeHtml(t("panel.publicCode"))}</dt><dd>${escapeHtml(detail.publicCode || "-")}</dd>
@@ -739,7 +739,7 @@ function renderNamesSection(detail) {
   if (!langs.length && !detail.defaultName) return "";
   return `
     <section>
-      <h3>${escapeHtml(t("panel.namesHeading"))}</h3>
+      <h3>${escapeHtml(t("panel.namesHeading"))} ${helpLink("names")}</h3>
       <dl>
         ${langs.map(([lang, name]) => `<dt>${escapeHtml(lang)}</dt><dd>${escapeHtml(name)}</dd>`).join("")}
         <dt>${escapeHtml(t("panel.defaultName"))}</dt>
@@ -767,17 +767,17 @@ function renderEditSections(detail) {
   const locked = detail.isWrapper ? " readonly" : "";
   // stop_type hoort bij de StopPlace en is verplicht; een quay heeft er zelf geen (die stuurt null = geen wijziging).
   const typeField = detail.isSynthetic ? `
-        <label>${escapeHtml(t("stopType.label"))}
+        <label>${escapeHtml(t("stopType.label"))} ${helpLink("stopType")}
           <select name="stopType">${stopTypeOptionsHtml(detail.stopType, false)}</select>
         </label>` : "";
   return `
     <section>
       <h3>${escapeHtml(t("panel.editHeading"))}</h3>
       <form class="inline-form" id="edit-form">
-        <label title="${escapeHtml(t("panel.internalNameHint"))}">${escapeHtml(t("panel.internalName"))}
+        <label title="${escapeHtml(t("panel.internalNameHint"))}">${escapeHtml(t("panel.internalName"))} ${helpLink("names")}
           <input name="name" value="${escapeHtml(detail.name)}" required${locked}>
         </label>${typeField}
-        <label>${escapeHtml(t("panel.publicCode"))}
+        <label>${escapeHtml(t("panel.publicCode"))} ${helpLink("publicCode")}
           <input name="publicCode" value="${escapeHtml(detail.publicCode || "")}"${locked}>
         </label>
         <label>${escapeHtml(t("panel.parentIdLabel"))}
@@ -1067,7 +1067,7 @@ function wireCreateNode() {
         <label>${escapeHtml(t("common.name"))}
           <input name="name" required>
         </label>
-        <label>${escapeHtml(t("stopType.label"))}
+        <label>${escapeHtml(t("stopType.label"))} ${helpLink("stopType")}
           <select name="stopType" required>${stopTypeOptionsHtml("onstreetBus", false)}</select>
         </label>
         <label>${escapeHtml(t("create.parentIdOptional"))}
@@ -1192,7 +1192,7 @@ async function openGroupDialog(picked, after = null) {
   if (details.some(isLoose) && !details.every(isLoose)) {
     const loose = details.filter(isLoose).map((d) => `<li>${escapeHtml(d.displayName)}</li>`).join("");
     showDialog(`
-      <h2>${escapeHtml(t("toolbar.groupStops"))}</h2>
+      <h2>${escapeHtml(t("toolbar.groupStops"))} ${helpLink("general")}</h2>
       <p class="error-text">${escapeHtml(t("group.mixedRefused"))}</p>
       <ul>${loose}</ul>
       <div class="dialog-actions">
@@ -1224,7 +1224,7 @@ async function openGroupDialog(picked, after = null) {
   }).join("");
 
   showDialog(`
-    <h2>${escapeHtml(t("toolbar.groupStops"))}</h2>
+    <h2>${escapeHtml(t("toolbar.groupStops"))} ${helpLink(groupsQuays ? "group" : "general")}</h2>
     <p>${escapeHtml(t(groupsQuays ? "group.explainQuays" : "group.explainStopPlaces", { count: picked.length }))}</p>
     ${!groupsQuays && modes.length === 1 ? `<p class="error-text">${escapeHtml(t("group.singleModeWarn", { mode }))}</p>` : ""}
     ${modeConflict ? `<p class="error-text">${escapeHtml(t("group.modeConflictWarn", { modes: modes.join(", ") }))}</p>` : ""}
@@ -1236,7 +1236,7 @@ async function openGroupDialog(picked, after = null) {
       <label>${escapeHtml(t("group.nameLabel"))}
         <input name="name" value="${escapeHtml(defaultName)}" required>
       </label>
-      <label>${escapeHtml(t("group.typeLabel"))}
+      <label>${escapeHtml(t("group.typeLabel"))} ${helpLink("stopType")}
         <select name="stopType" required>${suggestedType ? "" : `<option value="" selected disabled>${escapeHtml(t("group.typeChoose"))}</option>`}${stopTypeOptionsHtml(suggestedType, false)}</select>
       </label>
       <span class="error-text" id="group-error"></span>
@@ -1388,7 +1388,7 @@ async function confirmMerge(pickedSourceId, pickedTargetId) {
   const sourceFeeds = source.sources.map((s) => `${s.sourceSchema}:${s.sourceId} (${s.sourceName})`).join(", ") || t("common.none");
   const targetFeeds = target.sources.map((s) => `${s.sourceSchema}:${s.sourceId} (${s.sourceName})`).join(", ") || t("common.none");
   showDialog(`
-    <h2>${escapeHtml(t("toolbar.mergeStops"))}</h2>
+    <h2>${escapeHtml(t("toolbar.mergeStops"))} ${helpLink("merge")}</h2>
     <p>${t("merge.explain1", { source: escapeHtml(source.displayName), sourceFeeds: escapeHtml(sourceFeeds), target: escapeHtml(target.displayName), targetFeeds: escapeHtml(targetFeeds) })}</p>
     <p>${t("merge.explain2", { source: escapeHtml(source.displayName), target: escapeHtml(target.displayName) })}</p>
     ${operatorsDiffer(source, target) ? `<p class="error-text">${t("merge.crossOperator")}</p>` : ""}
@@ -1631,7 +1631,7 @@ const NAME_ISSUE_REASONS = ["disagree", "region_mixed", "general_region_unknown"
 
 async function openNameIssuesDialog() {
   showDialog(`
-    <h2>${escapeHtml(t("toolbar.nameIssues"))}</h2>
+    <h2>${escapeHtml(t("toolbar.nameIssues"))} ${helpLink("names")}</h2>
     <p class="hint-text">${escapeHtml(t("nameIssues.hint"))}</p>
     <div id="names-filters">
       <select id="names-reason">${NAME_ISSUE_REASONS.map((r) =>
@@ -1841,7 +1841,7 @@ async function openGroupCandidatesDialog() {
 
   function show() {
     showDialog(`
-      <h2>${escapeHtml(t("toolbar.groupCandidates"))}</h2>
+      <h2>${escapeHtml(t("toolbar.groupCandidates"))} ${helpLink("group")}</h2>
       <p class="hint-text">${escapeHtml(t("groupCandidates.hint", { m: CANDIDATE_WIDE_M }))}</p>
       <div id="names-filters">
         <input type="search" id="candidates-search" placeholder="${escapeHtml(t("report.filterPlaceholder"))}">
@@ -1895,7 +1895,7 @@ function renderModeMismatchCount() {
 // chb.stop_place_mode_mismatch (V149) en chb.source_station_mode_mismatch (V144): horen leeg te zijn.
 async function openModeMismatchesDialog() {
   showDialog(`
-    <h2>${escapeHtml(t("toolbar.modeMismatches"))}</h2>
+    <h2>${escapeHtml(t("toolbar.modeMismatches"))} ${helpLink("general")}</h2>
     <p class="hint-text">${escapeHtml(t("modeMismatches.hint"))}</p>
     <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
     <div class="dialog-actions">
@@ -1926,6 +1926,29 @@ async function openModeMismatchesDialog() {
 }
 
 // --- Generieke dialoog -------------------------------------------------------
+
+// Helppop-ups: samenvatting van de Business Rules CHB (ndov-repo), tekst in i18n.js (HELP_TEXTS, alleen Nederlands).
+const HELP_SECTIONS = { group: "§1, §2", general: "§1, §7", stopType: "§3", merge: "§6", publicCode: "§4", names: "§5, §6" };
+
+// Een link en geen <button>: een knop in een <label> wordt het gelabelde element, en dan opent een klik
+// op de labeltekst de hulp in plaats van het veld te focussen.
+function helpLink(topic) {
+  const title = escapeHtml(HELP_TEXTS[topic].title);
+  return `<a class="help-link" href="#" role="button" data-help="${topic}" title="${title}" aria-label="${title}">?</a>`;
+}
+
+// Een eigen <dialog>: die ligt boven #dialog-box, dus een half ingevuld formulier blijft staan.
+function wireHelp() {
+  document.addEventListener("click", (event) => {
+    const topic = event.target.closest("[data-help]")?.dataset.help;
+    if (!topic) return;
+    event.preventDefault();
+    document.getElementById("help-title").textContent = HELP_TEXTS[topic].title;
+    document.getElementById("help-body").innerHTML = HELP_TEXTS[topic].body;
+    document.getElementById("help-source").textContent = `Business Rules CHB ${HELP_SECTIONS[topic]}`;
+    document.getElementById("help-dialog").showModal();
+  });
+}
 
 function showDialog(html) {
   document.getElementById("dialog-box").innerHTML = html;
@@ -1966,6 +1989,7 @@ async function init() {
   applyLangSwitchUi();
   wireLangSwitch();
   wireLogout();
+  wireHelp();
   initMap();
   wireSearch();
   wireCreateNode();
