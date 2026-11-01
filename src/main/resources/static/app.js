@@ -1405,6 +1405,7 @@ function wireReport() {
   document.getElementById("btn-name-issues").addEventListener("click", openNameIssuesDialog);
   document.getElementById("btn-tec-cities").addEventListener("click", openTecCitiesDialog);
   document.getElementById("btn-multimode-quays").addEventListener("click", openMultimodeQuaysDialog);
+  document.getElementById("btn-mode-mismatches").addEventListener("click", openModeMismatchesDialog);
   document.getElementById("btn-group-candidates").addEventListener("click", openGroupCandidatesDialog);
   // Dicht bij een klik op een rapport of ernaast, en met Escape.
   const menu = document.getElementById("reports-menu");
@@ -1845,6 +1846,38 @@ async function openGroupCandidatesDialog() {
   rows = await apiFetch("/api/review/group-candidates");
   // Dialoog intussen gesloten of vervangen: niets meer te tekenen.
   if (document.getElementById("candidates-search")) render();
+}
+
+// chb.stop_place_mode_mismatch (ndov V149): hoort leeg te zijn.
+async function openModeMismatchesDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.modeMismatches"))}</h2>
+    <p class="hint-text">${escapeHtml(t("modeMismatches.hint"))}</p>
+    <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="mode-mismatches-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("mode-mismatches-close").addEventListener("click", closeDialog);
+  const rows = await apiFetch("/api/review/mode-mismatches");
+  const list = document.getElementById("names-list");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = rows.length ? "" : `<li class="report-item">${escapeHtml(t("modeMismatches.none"))}</li>`;
+  for (const row of rows) {
+    const parts = [t("modeMismatches.row", { quay: row.quayId, quayMode: row.quayMode || t("modeMismatches.mixedOrNoTrips"),
+      stop: row.stopId, stopMode: row.stopMode || t("group.noMode") })];
+    if (row.isWrapper) parts.push(t("kind.wrapper"));
+    const li = document.createElement("li");
+    li.className = "report-item";
+    li.innerHTML = `${escapeHtml(row.name)}<div class="report-item-sub">${escapeHtml(parts.join(" · "))}</div>`;
+    li.addEventListener("click", () => {
+      closeDialog();
+      selectStop(row.quayId);
+    });
+    list.appendChild(li);
+  }
 }
 
 // --- Generieke dialoog -------------------------------------------------------

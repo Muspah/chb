@@ -6,6 +6,7 @@ import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
 import be.gtfsbe.chb.dto.GeoJsonGeometry;
 import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.MapBounds;
+import be.gtfsbe.chb.dto.ModeMismatch;
 import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
 import be.gtfsbe.chb.dto.ReviewMismatch;
@@ -679,6 +680,13 @@ public class StopViewerRepository {
         return jdbcTemplate.query("SELECT quay_id, name, source_schemas, modes FROM chb.multimode_quay ORDER BY name, quay_id",
             (rs, rowNum) -> new MultimodeQuay(rs.getLong("quay_id"), rs.getString("name"),
                 textArray(rs, "source_schemas"), textArray(rs, "modes")));
+    }
+
+    /** Controleview uit ndov V149 (#78): hoort leeg te zijn, dus geen paginering. */
+    public List<ModeMismatch> findModeMismatches() {
+        return jdbcTemplate.query("SELECT quay_id, name, quay_mode, stop_id, stop_mode, is_wrapper FROM chb.stop_place_mode_mismatch ORDER BY name, quay_id",
+            (rs, rowNum) -> new ModeMismatch(rs.getLong("quay_id"), rs.getString("name"), rs.getString("quay_mode"),
+                rs.getLong("stop_id"), rs.getString("stop_mode"), rs.getBoolean("is_wrapper")));
     }
 
     /** Voorstellen uit ndov V143 (#67). Geen paginering: ~750 rijen in ~0,2 s; de lijst filtert client-side. */
