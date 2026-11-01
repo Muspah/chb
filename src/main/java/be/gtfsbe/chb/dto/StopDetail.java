@@ -36,6 +36,8 @@ public record StopDetail(
     String defaultName,
     /** NULL = tweetalig (Brussel) of onbekend. */
     String defaultLang,
-    String nameReason
+    String nameReason,
+    /** Attribuut _source_station ({@code <schema>:<station>}): automatisch gegroepeerd uit het bronstation (ndov V143). */
+    String sourceStation
 ) {
 }

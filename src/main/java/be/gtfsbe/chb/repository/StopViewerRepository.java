@@ -4,6 +4,7 @@ import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.GeoJsonFeature;
 import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
 import be.gtfsbe.chb.dto.GeoJsonGeometry;
+import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
@@ -69,6 +70,9 @@ public class StopViewerRepository {
      * {@link StopDetail}-veld/front-end-weergave is nog niet gebouwd.
      */
     public static final String SOURCE_PARENT_HINT_ATTRIBUTE_KEY = "_source_parent_station_hint";
+
+    /** Markering van een automatische bronstationgroep (ndov V143); blijft staan als een curator de groep bewerkt. */
+    private static final String SOURCE_STATION_ATTRIBUTE_KEY = "_source_station";
 
     private final JdbcTemplate jdbcTemplate;
     private final StopNameCache names;
@@ -352,6 +356,8 @@ public class StopViewerRepository {
         String deletedAt = attributes.remove(DELETED_ATTRIBUTE_KEY);
         attributes.remove(SOURCE_PARENT_HINT_ATTRIBUTE_KEY);
         attributes.remove("_resolved_meta");
+        String sourceStation = attributes.remove(SOURCE_STATION_ATTRIBUTE_KEY);
+        attributes.remove("_source_station_grouped");
 
         ps.getMoreResults();
         List<StopSource> sources = new ArrayList<>();
@@ -378,7 +384,7 @@ public class StopViewerRepository {
             synthetic, wrapper, quay, parentId, path, attributes, sources, children, reviewedAt, deletedAt, disabledAt,
             firstSeen, lastSeen, kind, transportMode, otherModes,
             n == null ? Map.of() : n.names(), n == null ? null : n.defaultName(), n == null ? null : n.defaultLang(),
-            n == null ? null : n.nameReason()));
+            n == null ? null : n.nameReason(), sourceStation));
     }
 
     /** "general > StopPlace [> quay]" met weergavenamen; path_ids/path_names zijn parallelle arrays (NULL = geen parent). */
@@ -474,8 +480,9 @@ public class StopViewerRepository {
         // Zelfde populatie als reviewStats: levende StopPlaces (chb.stop). reviewed_at van een quay telt hier niet
         // apart: een quay-wijziging markeert ook zijn wrapper (chb.cur_mark_reviewed, V111).
         String sql = """
-            SELECT id, name, path, stop_type, is_synthetic FROM (
-                SELECT s.id, s.name, concat_ws(' > ', g.name, s.name) AS path, s.stop_type, s.is_synthetic
+            SELECT id, name, path, stop_type, is_synthetic, auto_group FROM (
+                SELECT s.id, s.name, concat_ws(' > ', g.name, s.name) AS path, s.stop_type, s.is_synthetic,
+                    EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = '_source_station') AS auto_group
                 FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
                 WHERE s.merged_into_id IS NULL
                 AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
@@ -488,7 +495,7 @@ public class StopViewerRepository {
         String likePattern = "%" + (query == null ? "" : query) + "%";
         return jdbcTemplate.query(sql,
             (rs, rowNum) -> new UnreviewedStop(rs.getLong("id"), rs.getString("name"), rs.getString("path"),
-                rs.getString("stop_type"), rs.getBoolean("is_synthetic")),
+                rs.getString("stop_type"), rs.getBoolean("is_synthetic"), rs.getBoolean("auto_group")),
             REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY, likePattern, limit, offset);
     }
 
@@ -531,6 +538,7 @@ public class StopViewerRepository {
             .collect(Collectors.joining(",", "{", "}"));
         String unreviewedSql = """
             SELECT s.id, s.name, concat_ws(' > ', g.name, s.name) AS path, s.stop_type, s.is_synthetic,
+                EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = '_source_station') AS auto_group,
                 lower(btrim(s.name)) AS norm_name
             FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
             WHERE s.merged_into_id IS NULL
@@ -543,7 +551,7 @@ public class StopViewerRepository {
         jdbcTemplate.query(unreviewedSql, rs -> {
             byNormName.computeIfAbsent(rs.getString("norm_name"), k -> new ArrayList<>())
                 .add(new UnreviewedStop(rs.getLong("id"), rs.getString("name"), rs.getString("path"),
-                    rs.getString("stop_type"), rs.getBoolean("is_synthetic")));
+                    rs.getString("stop_type"), rs.getBoolean("is_synthetic"), rs.getBoolean("auto_group")));
         }, REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY, normNamesLiteral);
 
         return groups.stream()
@@ -663,6 +671,13 @@ public class StopViewerRepository {
         return jdbcTemplate.query("SELECT quay_id, name, source_schemas, modes FROM chb.multimode_quay ORDER BY name, quay_id",
             (rs, rowNum) -> new MultimodeQuay(rs.getLong("quay_id"), rs.getString("name"),
                 textArray(rs, "source_schemas"), textArray(rs, "modes")));
+    }
+
+    /** Voorstellen uit ndov V143 (#67). Geen paginering: ~750 rijen in ~0,2 s; de lijst filtert client-side. */
+    public List<GroupCandidate> findGroupCandidates() {
+        return jdbcTemplate.query("SELECT name, transport_mode, quay_ids, max_distance_m FROM chb.stop_group_candidate ORDER BY name, transport_mode, quay_ids",
+            (rs, rowNum) -> new GroupCandidate(rs.getString("name"), rs.getString("transport_mode"),
+                List.of((Long[]) rs.getArray("quay_ids").getArray()), rs.getLong("max_distance_m")));
     }
 
     public boolean exists(long id) {

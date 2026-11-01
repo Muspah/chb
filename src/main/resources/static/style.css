@@ -593,6 +593,11 @@ button, input, select {
   color: var(--brand-800);
 }
 
+.badge-auto {
+  background: rgba(107, 79, 187, 0.14);
+  color: #54399c;
+}
+
 .badge-reviewed {
   background: rgba(31, 138, 83, 0.14);
   color: var(--success-600);

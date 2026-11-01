@@ -590,6 +590,10 @@ function modeBadges(d) {
   return [d.transportMode, ...(d.otherTransportModes || [])].map(modeBadge).join(" ");
 }
 
+function autoGroupBadge() {
+  return `<span class="badge badge-auto" title="${escapeHtml(t("panel.autoGroupHint"))}">${escapeHtml(t("panel.autoGroupBadge"))}</span>`;
+}
+
 function kindBadge(kind) {
   return kind ? ` <span class="badge badge-synthetic">${escapeHtml(t("kind." + kind))}</span>` : "";
 }
@@ -660,6 +664,7 @@ function renderPanel(detail, history) {
     </section>` : "";
 
   const typeBadge = `<span class="badge ${detail.isSynthetic ? "badge-synthetic" : "badge-physical"}">${escapeHtml(stopTypeLabel(detail.stopType))}</span>`;
+  const autoBadge = detail.sourceStation ? autoGroupBadge() : "";
   const reviewBadge = detail.reviewedAt ? `<span class="badge badge-reviewed">${escapeHtml(t("panel.reviewedBadge"))}</span>` : "";
   const disabledBadge = detail.disabledAt
     ? `<span class="badge badge-disabled" title="${escapeHtml(t("panel.disabledSince", { date: formatTimestamp(detail.disabledAt) }))}">${escapeHtml(t("panel.disabledBadge"))}</span>`
@@ -668,13 +673,14 @@ function renderPanel(detail, history) {
   let html = `
     <h2>${escapeHtml(detail.displayName)}</h2>
     <div class="path">${parentLine}</div>
-    <div class="badge-row">${typeBadge}${kindBadge(detail.kind)}${reviewBadge}${disabledBadge}</div>
+    <div class="badge-row">${typeBadge}${kindBadge(detail.kind)}${autoBadge}${reviewBadge}${disabledBadge}</div>
     ${detail.kind === "general" && !detail.transportMode ? `<p class="error-text">${escapeHtml(t("panel.generalNoMode"))}</p>` : ""}
     ${detail.kind === "general" && detail.transportMode && !detail.otherTransportModes?.length ? `<p class="error-text">${escapeHtml(t("panel.generalSingleMode"))}</p>` : ""}
     <dl>
       <dt>${escapeHtml(t("panel.transportMode"))}</dt><dd>${escapeHtml(modesText(detail))}</dd>
       <dt>${escapeHtml(t("panel.publicCode"))}</dt><dd>${escapeHtml(detail.publicCode || "-")}</dd>
       <dt>${escapeHtml(t("panel.origin"))}</dt><dd>${sourcesLine}</dd>
+      ${detail.sourceStation ? `<dt>${escapeHtml(t("panel.sourceStation"))}</dt><dd>${escapeHtml(detail.sourceStation)}</dd>` : ""}
       ${detail.firstSeenAt ? `<dt>${escapeHtml(t("panel.firstSeen"))}</dt><dd>${escapeHtml(formatTimestamp(detail.firstSeenAt))}</dd>` : ""}
       ${detail.lastSeenAt ? `<dt>${escapeHtml(t("panel.lastSeen"))}</dt><dd>${escapeHtml(formatTimestamp(detail.lastSeenAt))}</dd>` : ""}
       <dt>${escapeHtml(t("panel.synthetic"))}</dt><dd>${detail.isSynthetic ? escapeHtml(t("common.yes")) : escapeHtml(t("common.no"))}</dd>
@@ -1118,7 +1124,7 @@ function wireGroupMode() {
     document.getElementById("group-status").hidden = false;
     updateGroupStatus();
   });
-  document.getElementById("group-confirm-btn").addEventListener("click", openGroupDialog);
+  document.getElementById("group-confirm-btn").addEventListener("click", () => openGroupDialog(state.group.pickedIds));
 }
 
 function exitGroupMode() {
@@ -1149,11 +1155,11 @@ function updateGroupStatus() {
   confirmBtn.hidden = picked.length < 2;
 }
 
-async function openGroupDialog() {
+// after: terug naar het voorstellenoverzicht, met grouped = of er gegroepeerd is.
+async function openGroupDialog(picked, after = null) {
   // Niet via state.stopsById lezen: dat komt enkel uit de kaart-GeoJSON van het huidige
   // viewport (zie loadStops), maar een halte kan ook via zoeken gekozen zijn terwijl ze buiten
   // beeld ligt. Rechtstreeks ophalen dekt beide gevallen en levert meteen ook de bronnen.
-  const picked = state.group.pickedIds;
   const details = await Promise.all(picked.map((id) => apiFetch("/api/stops/" + id)));
   const defaultName = details[0]?.displayName || "";
   // Alleen wrappers (losse haltes zonder eigen StopPlace) -> hun quays worden één nieuwe StopPlace (de
@@ -1219,7 +1225,10 @@ async function openGroupDialog() {
       </div>
     </form>
   `);
-  document.getElementById("group-dialog-cancel").addEventListener("click", closeDialog);
+  document.getElementById("group-dialog-cancel").addEventListener("click", () => {
+    closeDialog();
+    after?.(false);
+  });
   document.getElementById("group-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const errorEl = document.getElementById("group-error");
@@ -1240,6 +1249,7 @@ async function openGroupDialog() {
       closePanel();
       exitGroupMode();
       await loadStops();
+      after?.(true);
     };
     try {
       await submit(false);
@@ -1254,6 +1264,8 @@ async function openGroupDialog() {
           } catch (e2) {
             alert(e2.message);
           }
+        } else {
+          after?.(false);
         }
       } else {
         showActionError(errorEl, e);
@@ -1393,6 +1405,7 @@ function wireReport() {
   document.getElementById("btn-name-issues").addEventListener("click", openNameIssuesDialog);
   document.getElementById("btn-tec-cities").addEventListener("click", openTecCitiesDialog);
   document.getElementById("btn-multimode-quays").addEventListener("click", openMultimodeQuaysDialog);
+  document.getElementById("btn-group-candidates").addEventListener("click", openGroupCandidatesDialog);
   // Dicht bij een klik op een rapport of ernaast, en met Escape.
   const menu = document.getElementById("reports-menu");
   document.addEventListener("click", (event) => {
@@ -1481,7 +1494,7 @@ async function openReportDialog() {
     for (const stop of results) {
       const li = document.createElement("li");
       li.className = "report-item";
-      li.textContent = stop.path;
+      li.innerHTML = escapeHtml(stop.path) + (stop.autoGroup ? " " + autoGroupBadge() : "");
       li.addEventListener("click", () => {
         closeDialog();
         selectStop(stop.id);
@@ -1744,6 +1757,74 @@ async function openMultimodeQuaysDialog() {
     });
     list.appendChild(li);
   }
+}
+
+// chb.stop_group_candidate (ndov V143): voorstellen, de curator beslist. Afwijzen kan nog niet: een voorstel
+// verdwijnt pas na groeperen. De ketting kan langer zijn dan de 150 m van de clustering (max_distance_m).
+const CANDIDATE_WIDE_M = 150;
+
+async function openGroupCandidatesDialog() {
+  let rows = null;
+  let filter = "";
+  let scrollTop = 0;
+
+  function render() {
+    const list = document.getElementById("names-list");
+    const needle = filter.trim().toLowerCase();
+    const shown = rows.filter((row) => row.name.toLowerCase().includes(needle));
+    document.getElementById("candidates-count").textContent = t("groupCandidates.count", { n: shown.length });
+    list.innerHTML = shown.length ? "" : `<li class="report-item">${escapeHtml(t("groupCandidates.none"))}</li>`;
+    for (const row of shown) {
+      const li = document.createElement("li");
+      li.className = "report-item tec-city-row";
+      const wide = row.maxDistanceM > CANDIDATE_WIDE_M;
+      li.innerHTML = `<div class="tec-city-name">${modeBadges(row)} ${escapeHtml(row.name)}
+          <div class="report-item-sub">${escapeHtml(t("groupCandidates.meta", { count: row.quayIds.length, m: row.maxDistanceM }))}${wide ? ` · <span class="error-text">${escapeHtml(t("groupCandidates.wide", { m: CANDIDATE_WIDE_M }))}</span>` : ""}</div></div>
+        <button type="button" class="secondary">${escapeHtml(t("groupCandidates.group"))}</button>`;
+      li.querySelector(".tec-city-name").addEventListener("click", () => {
+        closeDialog();
+        selectStop(row.quayIds[0]);
+      });
+      li.querySelector("button").addEventListener("click", () => {
+        scrollTop = list.scrollTop;
+        openGroupDialog(row.quayIds, (grouped) => {
+          if (grouped) rows = rows.filter((r) => r !== row);
+          show();
+        });
+      });
+      list.appendChild(li);
+    }
+    list.scrollTop = scrollTop;
+  }
+
+  function show() {
+    showDialog(`
+      <h2>${escapeHtml(t("toolbar.groupCandidates"))}</h2>
+      <p class="hint-text">${escapeHtml(t("groupCandidates.hint", { m: CANDIDATE_WIDE_M }))}</p>
+      <div id="names-filters">
+        <input type="search" id="candidates-search" placeholder="${escapeHtml(t("report.filterPlaceholder"))}">
+        <span id="candidates-count" class="hint-text"></span>
+      </div>
+      <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+      <div class="dialog-actions">
+        <button type="button" class="secondary" id="candidates-close">${escapeHtml(t("common.close"))}</button>
+      </div>
+    `);
+    document.getElementById("candidates-close").addEventListener("click", closeDialog);
+    const search = document.getElementById("candidates-search");
+    search.value = filter;
+    search.addEventListener("input", () => {
+      filter = search.value;
+      scrollTop = 0;
+      render();
+    });
+    if (rows) render();
+  }
+
+  show();
+  rows = await apiFetch("/api/review/group-candidates");
+  // Dialoog intussen gesloten of vervangen: niets meer te tekenen.
+  if (document.getElementById("candidates-search")) render();
 }
 
 // --- Generieke dialoog -------------------------------------------------------
