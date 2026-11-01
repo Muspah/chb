@@ -4,6 +4,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -11,8 +12,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.CsrfConfigurer;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserService;
 import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserRequest;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
@@ -21,6 +24,7 @@ import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
+import org.springframework.security.web.context.SecurityContextHolderFilter;
 import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.security.web.savedrequest.NullRequestCache;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
@@ -28,6 +32,8 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -54,6 +60,8 @@ public class SecurityConfig {
      */
     private static final String CURATOR_APP_ROLE = "Curator";
     public static final String CURATOR_AUTHORITY = "ROLE_" + CURATOR_APP_ROLE.toUpperCase(Locale.ROOT);
+
+    private static final Duration MAX_LOGIN_AGE = Duration.ofDays(7);
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -90,6 +98,7 @@ public class SecurityConfig {
             // stuurt).
             .csrf(CsrfConfigurer::spa)
             .addFilterAfter(new CsrfCookieFilter(), BasicAuthenticationFilter.class)
+            .addFilterAfter(new MaxSessionAgeFilter(), SecurityContextHolderFilter.class)
             // style-src-attr: de markers en enkele tabelrijen hebben een inline style-attribuut.
             .headers(headers -> headers.contentSecurityPolicy(csp -> csp.policyDirectives(
                 "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' https://unpkg.com; "
@@ -139,6 +148,30 @@ public class SecurityConfig {
             }
             return new DefaultOidcUser(authorities, oidcUser.getIdToken(), oidcUser.getUserInfo());
         };
+    }
+
+    /**
+     * Rollen worden alleen bij het inloggen gelezen en de sessie schuift bij elke request door, dus
+     * zonder bovengrens blijft een ingetrokken Curator-rol werken zolang de sessie in gebruik is.
+     * Meet vanaf de {@code iat} van het ID-token, niet vanaf de aanmaaktijd van de sessie: de
+     * OAuth2-flow hergebruikt een bestaande anonieme sessie, die al veel ouder kan zijn dan de login.
+     * Het request gaat daarna anoniem verder (publiek blijft werken, de rest geeft 401).
+     */
+    static final class MaxSessionAgeFilter extends OncePerRequestFilter {
+        @Override
+        protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+                throws ServletException, IOException {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (authentication != null && authentication.getPrincipal() instanceof OidcUser user
+                    && user.getIdToken().getIssuedAt().plus(MAX_LOGIN_AGE).isBefore(Instant.now())) {
+                HttpSession session = request.getSession(false);
+                if (session != null) {
+                    session.invalidate();
+                }
+                SecurityContextHolder.clearContext();
+            }
+            filterChain.doFilter(request, response);
+        }
     }
 
     /**
