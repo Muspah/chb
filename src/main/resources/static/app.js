@@ -1458,6 +1458,10 @@ async function openReportDialog() {
   showDialog(`
     <h2>${escapeHtml(t("toolbar.report"))}</h2>
     <p id="report-stats" class="hint-text">${escapeHtml(t("common.loading"))}</p>
+    <div id="report-mismatches" hidden>
+      <p class="error-text" id="report-mismatches-text"></p>
+      <ul id="report-mismatch-list"></ul>
+    </div>
     <input type="search" id="report-search" placeholder="${escapeHtml(t("report.filterPlaceholder"))}">
     <ul id="report-list"></ul>
     <button type="button" class="secondary" id="report-load-more" hidden>${escapeHtml(t("report.loadMore"))}</button>
@@ -1477,6 +1481,22 @@ async function openReportDialog() {
     document.getElementById("report-stats").textContent =
       t("report.stats", { reviewed: done, total: stats.totalQuays, pct, grouped: stats.grouped, standalone: stats.standaloneOk,
         remaining: stats.unreviewedStopPlaces });
+    if (stats.reviewMismatches.length) {
+      document.getElementById("report-mismatches").hidden = false;
+      document.getElementById("report-mismatches-text").textContent = t("report.mismatches", { n: stats.reviewMismatches.length });
+      const list = document.getElementById("report-mismatch-list");
+      for (const m of stats.reviewMismatches) {
+        const li = document.createElement("li");
+        li.className = "report-item";
+        li.textContent = t("report.mismatchRow", { name: m.name, id: m.stopId, quay: m.quayId,
+          stopDate: formatTimestamp(m.stopReviewedAt) || "–", quayDate: formatTimestamp(m.quayReviewedAt) || "–" });
+        li.addEventListener("click", () => {
+          closeDialog();
+          selectStop(m.stopId);
+        });
+        list.appendChild(li);
+      }
+    }
     // Blinde vlek dichten: de database kan geweigerde acties niet zelf tellen (transactie rolt terug).
     const rejections = await apiFetch("/api/review/rejections");
     const list = Object.entries(rejections).map(([code, n]) => code + ": " + n).join(", ") || t("common.none");

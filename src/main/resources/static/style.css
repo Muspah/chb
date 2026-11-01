@@ -862,6 +862,7 @@ button, input, select {
 }
 
 #report-list,
+#report-mismatch-list,
 #dup-list,
 #names-list {
   list-style: none;

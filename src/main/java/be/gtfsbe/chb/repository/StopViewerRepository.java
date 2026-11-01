@@ -8,6 +8,7 @@ import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
+import be.gtfsbe.chb.dto.ReviewMismatch;
 import be.gtfsbe.chb.dto.ReviewStats;
 import be.gtfsbe.chb.dto.StopChildSummary;
 import be.gtfsbe.chb.dto.StopDetail;
@@ -469,16 +470,23 @@ public class StopViewerRepository {
             WHERE q.merged_into_id IS NULL
             AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
             """;
+        // ponytail: geen LIMIT, de view hoort leeg te zijn; pagineren als hij ooit structureel rijen bevat.
+        List<ReviewMismatch> mismatches = jdbcTemplate.query("""
+            SELECT m.stop_id, s.name, m.quay_id, m.stop_reviewed_at, m.quay_reviewed_at
+            FROM chb.wrapper_review_mismatch m JOIN chb.stop s ON s.id = m.stop_id
+            ORDER BY m.stop_id
+            """, (rs, rowNum) -> new ReviewMismatch(rs.getLong("stop_id"), rs.getString("name"), rs.getLong("quay_id"),
+                rs.getString("stop_reviewed_at"), rs.getString("quay_reviewed_at")));
         return jdbcTemplate.query(sql, rs -> {
             rs.next();
             return new ReviewStats(rs.getLong("total_quays"), rs.getLong("grouped"), rs.getLong("standalone_ok"),
-                rs.getLong("unreviewed_stop_places"));
+                rs.getLong("unreviewed_stop_places"), mismatches);
         }, REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY);
     }
 
     public List<UnreviewedStop> findUnreviewed(String query, int limit, int offset) {
         // Zelfde populatie als reviewStats: levende StopPlaces (chb.stop). reviewed_at van een quay telt hier niet
-        // apart: een quay-wijziging markeert ook zijn wrapper (chb.cur_mark_reviewed, V111).
+        // apart: de triggers van V142 houden wrapper en quay gelijk (controle: chb.wrapper_review_mismatch).
         String sql = """
             SELECT id, name, path, stop_type, is_synthetic, auto_group FROM (
                 SELECT s.id, s.name, concat_ws(' > ', g.name, s.name) AS path, s.stop_type, s.is_synthetic,

@@ -225,6 +225,8 @@ const translations = {
     "panel.quayBadge": "quay",
     "merge.needQuay": "Merging works on quays: pick single stops (or wrappers), not a StopPlace with several quays.",
     "report.rejections": "Actions rejected by the database since server start: {list}.",
+    "report.mismatches": "{n} stop(s) whose reviewed status differs from their quay. This should be 0: something bypassed the database triggers.",
+    "report.mismatchRow": "{name} ({id}): stop {stopDate}, quay {quay} {quayDate}",
 
     "merge.startHint": "First click the stop that will disappear (source), then the stop that remains (target).",
     "merge.sourcePicked": "Source: {name} — now click the target stop.",
@@ -426,6 +428,8 @@ const translations = {
     "panel.quayBadge": "quay",
     "merge.needQuay": "Samenvoegen werkt op quays: kies losse haltes (of wrappers), geen StopPlace met meerdere quays.",
     "report.rejections": "Door de database geweigerde acties sinds serverstart: {list}.",
+    "report.mismatches": "{n} halte(s) waarvan de nagekeken-status afwijkt van hun quay. Dit hoort 0 te zijn: iets is buiten de databasetriggers om gegaan.",
+    "report.mismatchRow": "{name} ({id}): halte {stopDate}, quay {quay} {quayDate}",
 
     "merge.startHint": "Klik eerst de halte die verdwijnt (bron), dan de halte die overblijft (doel).",
     "merge.sourcePicked": "Bron: {name} — klik nu de doel-halte aan.",
@@ -627,6 +631,8 @@ const translations = {
     "panel.quayBadge": "Quay",
     "merge.needQuay": "Zusammenführen funktioniert auf Quays: wähle einzelne Haltestellen (oder Wrapper), keine StopPlace mit mehreren Quays.",
     "report.rejections": "Seit Serverstart von der Datenbank abgelehnte Aktionen: {list}.",
+    "report.mismatches": "{n} Haltestelle(n), deren Prüfstatus von ihrem Quay abweicht. Das sollte 0 sein: Etwas hat die Datenbank-Trigger umgangen.",
+    "report.mismatchRow": "{name} ({id}): Haltestelle {stopDate}, Quay {quay} {quayDate}",
 
     "merge.startHint": "Klicken Sie zuerst die Haltestelle an, die verschwindet (Quelle), dann die Haltestelle, die bestehen bleibt (Ziel).",
     "merge.sourcePicked": "Quelle: {name} — klicken Sie nun die Zielhaltestelle an.",
@@ -828,6 +834,8 @@ const translations = {
     "panel.quayBadge": "quai",
     "merge.needQuay": "La fusion s'applique aux quais : choisissez des arrêts simples (ou des enveloppes), pas une StopPlace avec plusieurs quais.",
     "report.rejections": "Actions rejetées par la base de données depuis le démarrage du serveur : {list}.",
+    "report.mismatches": "{n} arrêt(s) dont le statut de vérification diffère de leur quai. Cela devrait être 0 : quelque chose a contourné les déclencheurs de la base de données.",
+    "report.mismatchRow": "{name} ({id}) : arrêt {stopDate}, quai {quay} {quayDate}",
 
     "merge.startHint": "Cliquez d'abord sur l'arrêt qui va disparaître (source), puis sur l'arrêt qui reste (cible).",
     "merge.sourcePicked": "Source : {name} — cliquez maintenant sur l'arrêt cible.",
