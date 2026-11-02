@@ -443,9 +443,10 @@ async function loadStops() {
         await loadStops(); // bij een fout springt de marker terug, bij succes staat hij op de nieuwe plek
       });
     }
+    const label = props.publicCode ? `${stopName(props)} (${props.publicCode})` : stopName(props);
     const tooltip = props.disabledAt
-      ? `${stopName(props)} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
-      : stopName(props);
+      ? `${label} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
+      : label;
     marker.bindTooltip(escapeHtml(tooltip));
     marker.on("click", () => onMarkerClick(props.id));
     markers.push(marker);
