@@ -13,5 +13,7 @@ spring.security.oauth2.client.registration.azure.client-id=REPLACE_ME
 spring.security.oauth2.client.registration.azure.client-secret=REPLACE_ME
 spring.security.oauth2.client.provider.azure.issuer-uri=https://login.microsoftonline.com/REPLACE_ME_TENANT_ID/v2.0
 
+app.datasource.viewer.url=jdbc:postgresql://REPLACE_ME:5432/integration
+app.datasource.editor.url=jdbc:postgresql://REPLACE_ME:5432/integration
 app.datasource.viewer.password=REPLACE_ME
 app.datasource.editor.password=REPLACE_ME
