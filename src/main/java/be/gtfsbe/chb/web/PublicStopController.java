@@ -41,6 +41,13 @@ public class PublicStopController {
         this.repository = repository;
     }
 
+    /** Voor externe monitoring: 200 als de app draait en de database antwoordt, anders een fout. */
+    @GetMapping("/api/health")
+    public String health() {
+        repository.ping();
+        return "ok";
+    }
+
     @GetMapping("/api/stops")
     public GeoJsonFeatureCollection stops(@RequestParam double minLon, @RequestParam double minLat,
                                            @RequestParam double maxLon, @RequestParam double maxLat,

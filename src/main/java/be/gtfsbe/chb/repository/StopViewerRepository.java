@@ -703,6 +703,11 @@ public class StopViewerRepository {
                 List.of((Long[]) rs.getArray("quay_ids").getArray()), rs.getLong("max_distance_m")));
     }
 
+    /** Faalt als de chb_viewer-pool geen verbinding krijgt; voor {@code /api/health}. */
+    public void ping() {
+        jdbcTemplate.queryForObject("SELECT 1", Integer.class);
+    }
+
     public boolean exists(long id) {
         Boolean result = jdbcTemplate.queryForObject(
             "SELECT EXISTS(SELECT 1 FROM chb.stop WHERE id = ?) OR EXISTS(SELECT 1 FROM chb.quay WHERE id = ?)", Boolean.class, id, id);

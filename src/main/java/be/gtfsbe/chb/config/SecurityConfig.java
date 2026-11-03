@@ -75,7 +75,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.GET,
                     "/", "/index.html", "/app.js", "/i18n.js", "/style.css", "/favicon.ico", "/robots.txt", "/static/**",
-                    "/api/stops", "/api/stops/*", "/api/search", "/api/stop-place-types").permitAll()
+                    "/api/stops", "/api/stops/*", "/api/search", "/api/stop-place-types", "/api/health").permitAll()
                 .requestMatchers("/api/me").permitAll()
                 .requestMatchers("/oauth2/**", "/login/**", "/error").permitAll()
                 // Enkel bekijken (geschiedenis): elke ingelogde gebruiker, geen curator-rol nodig.
