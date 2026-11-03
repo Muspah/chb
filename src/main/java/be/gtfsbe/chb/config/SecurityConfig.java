@@ -82,15 +82,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/stops/*/history").authenticated()
                 // Doorlichtingsrapport: enkel curatoren, dit is puur een werklijst voor hen.
                 .requestMatchers(HttpMethod.GET, "/api/review/**").hasAuthority(CURATOR_AUTHORITY)
-                // Alles wat schrijft: enkel gebruikers met de Curator-app role.
-                .requestMatchers(HttpMethod.POST, "/api/stops", "/api/stops/group", "/api/stops/*/merge",
-                    "/api/stops/*/review", "/api/stops/*/restore", "/api/stops/*/recompute-location", "/api/stops/*/location", "/api/stops/*/reset-location",
-                    "/api/stops/*/promote-wrapper")
-                    .hasAuthority(CURATOR_AUTHORITY)
-                .requestMatchers(HttpMethod.PATCH, "/api/stops/*").hasAuthority(CURATOR_AUTHORITY)
-                .requestMatchers(HttpMethod.PUT, "/api/stops/*/attributes/*").hasAuthority(CURATOR_AUTHORITY)
-                .requestMatchers(HttpMethod.DELETE, "/api/stops/*/attributes/*", "/api/stops/*/review", "/api/stops/*")
-                    .hasAuthority(CURATOR_AUTHORITY)
+                // De rest van /api/**, dus alles wat schrijft, ook een nieuwe route: enkel de Curator-app role.
+                .requestMatchers(apiMatcher).hasAuthority(CURATOR_AUTHORITY)
                 .anyRequest().authenticated())
             // Spring Security 7's kant-en-klare SPA-preset: CookieCsrfTokenRepository
             // (XSRF-TOKEN-cookie, leesbaar door JS) + SpaCsrfTokenRequestHandler (accepteert het
