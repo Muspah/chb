@@ -427,6 +427,9 @@ function stopIcon(props) {
   });
 }
 
+// Een trage eerdere aanvraag (snel pannen) mag het nieuwere beeld niet overschrijven (issue #17).
+let loadStopsGeneration = 0;
+
 async function loadStops() {
   // curator-check hier ook: een gedeelde link met ?unreviewed=1 mag voor een niet-curator (of
   // nog niet ingelogde bezoeker) niet op een 403 van het curator-only endpoint stuiten — die
@@ -446,7 +449,9 @@ async function loadStops() {
   // Server filtert disabled_at IS NOT NULL-haltes standaard al weg (StopViewerRepository) — de
   // toggle vraagt gewoon de ongefilterde set op i.p.v. hier client-side te filteren.
   if (state.showDisabled) params.set("showDisabled", "1");
+  const mine = ++loadStopsGeneration;
   const collection = await apiFetch(path + "?" + params);
+  if (mine !== loadStopsGeneration) return;
   document.getElementById("map-hint").hidden = !collection.truncated;
   state.stopsById.clear();
   state.markerLayer.clearLayers();
@@ -538,9 +543,11 @@ function wireSearch() {
   const input = document.getElementById("search");
   const results = document.getElementById("search-results");
   let debounceHandle = null;
+  let generation = 0;
 
   input.addEventListener("input", () => {
     clearTimeout(debounceHandle);
+    const mine = ++generation; // ook bij leeg veld: een lopende zoekopdracht mag de lijst niet meer vullen
     const query = input.value.trim();
     if (!query) {
       results.innerHTML = "";
@@ -548,6 +555,7 @@ function wireSearch() {
     }
     debounceHandle = setTimeout(async () => {
       const matches = await apiFetch("/api/search?q=" + encodeURIComponent(query));
+      if (mine !== generation) return;
       results.innerHTML = "";
       for (const match of matches) {
         const li = document.createElement("li");
@@ -1537,6 +1545,7 @@ async function openReportDialog() {
 
   const paging = { query: "", offset: 0, limit: 50 };
   let debounceHandle = null;
+  let generation = 0;
 
   async function loadStats() {
     const stats = await apiFetch("/api/review/stats");
@@ -1568,13 +1577,14 @@ async function openReportDialog() {
   }
 
   async function loadPage(reset) {
-    if (reset) {
-      paging.offset = 0;
-      document.getElementById("report-list").innerHTML = "";
-    }
+    if (reset) paging.offset = 0;
+    document.getElementById("report-load-more").hidden = true; // geen 'meer' bovenop een lopende reset
+    const mine = ++generation;
     const results = await apiFetch(
       "/api/review/unreviewed?q=" + encodeURIComponent(paging.query) + "&limit=" + paging.limit + "&offset=" + paging.offset);
     const list = document.getElementById("report-list");
+    if (mine !== generation || !list) return;
+    if (reset) list.innerHTML = "";
     for (const stop of results) {
       const li = document.createElement("li");
       li.className = "report-item";
@@ -1620,15 +1630,17 @@ async function openDuplicateNamesDialog() {
 
   const paging = { query: "", offset: 0, limit: 20 };
   let debounceHandle = null;
+  let generation = 0;
 
   async function loadPage(reset) {
-    if (reset) {
-      paging.offset = 0;
-      document.getElementById("dup-list").innerHTML = "";
-    }
+    if (reset) paging.offset = 0;
+    document.getElementById("dup-load-more").hidden = true; // geen 'meer' bovenop een lopende reset
+    const mine = ++generation;
     const groups = await apiFetch(
       "/api/review/duplicate-names?q=" + encodeURIComponent(paging.query) + "&limit=" + paging.limit + "&offset=" + paging.offset);
     const list = document.getElementById("dup-list");
+    if (mine !== generation || !list) return;
+    if (reset) list.innerHTML = "";
     for (const group of groups) {
       const groupLi = document.createElement("li");
       groupLi.className = "report-group";
