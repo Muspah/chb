@@ -326,6 +326,25 @@ button, input, select {
   display: none;
 }
 
+#error-toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2100;
+  max-width: calc(100vw - 2rem);
+  background: var(--danger-600);
+  color: white;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  box-shadow: var(--shadow-md);
+}
+
+#error-toast[hidden] {
+  display: none;
+}
+
 .stop-marker span {
   display: flex;
   align-items: center;

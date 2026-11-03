@@ -37,16 +37,24 @@ async function apiFetch(url, options = {}) {
     if (token) headers["X-XSRF-TOKEN"] = token;
     if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
   }
-  const response = await fetch(url, Object.assign({}, options, { headers, credentials: "same-origin" }));
+  let response;
+  try {
+    response = await fetch(url, Object.assign({}, options, { headers, credentials: "same-origin" }));
+  } catch (e) {
+    throw new Error(t("error.network")); // "Failed to fetch" is onvertaald en zegt de curator niets
+  }
   if (response.ok && options.method && options.method !== "GET") refreshModeMismatches().catch(console.error);
   if (response.status === 204) return null;
   if (!response.ok) {
-    let message = response.statusText;
     let body = null;
     try {
       body = await response.json();
-      if (body && body.message) message = body.message;
-    } catch (ignored) { /* geen JSON-body, val terug op statusText */ }
+    } catch (ignored) { /* geen JSON-body (bv. 401 van HttpStatusEntryPoint) */ }
+    if (response.status === 401) sessionExpired();
+    // statusText is leeg op HTTP/2, dus bij een ontbrekende servermelding een vertaalde per status.
+    const message = response.status === 401 || response.status === 403 || !(body && body.message)
+      ? httpStatusMessage(response.status)
+      : body.message;
     const error = new Error(message);
     error.status = response.status;
     // Door de database geweigerde curator-actie: SQLSTATE (UC001 = dubbele naam, ...), betrokken
@@ -81,12 +89,45 @@ function showActionError(el, e) {
   }
 }
 
+function httpStatusMessage(status) {
+  if (status === 401 || status === 403 || status === 404) return t("error.http" + status);
+  return t("error.httpStatus", { status });
+}
+
+// Sessie verlopen: terug naar de anonieme weergave, zodat de bewerkknoppen verdwijnen en de
+// inloglink weer verschijnt.
+function sessionExpired() {
+  if (!state.me.authenticated) return;
+  state.me = { authenticated: false, curator: false, name: null, email: null };
+  renderAuthArea();
+  document.getElementById("toolbar").hidden = true;
+  if (!document.getElementById("panel").hidden && state.lastDetail) {
+    state.lastHistory = null;
+    renderPanel(state.lastDetail, null);
+  }
+}
+
+/**
+ * Melding voor acties zonder eigen foutveld. Een balk i.p.v. alert(): een mislukte kaartlading
+ * bij elke pan zou anders een reeks blokkerende pop-ups geven.
+ */
+function showError(e) {
+  const toast = document.getElementById("error-toast");
+  toast.textContent = (e && e.message) || t("error.unexpected");
+  toast.hidden = false;
+  clearTimeout(showError.handle);
+  showError.handle = setTimeout(() => { toast.hidden = true; }, 8000);
+}
+
+// Centrale vangnet: elke niet-opgevangen fout (selectStop, loadStops, zoeken, dialogen, ...) wordt zichtbaar.
+window.addEventListener("unhandledrejection", (event) => showError(event.reason));
+
 /** Voor acties zonder eigen foutveld: fout als melding i.p.v. een onafgehandelde promise-rejection. */
 async function guarded(action) {
   try {
     await action();
   } catch (e) {
-    alert(e.message);
+    showError(e);
   }
 }
 
@@ -438,7 +479,7 @@ async function loadStops() {
           });
           if (state.lastDetail && state.lastDetail.id === props.id) await selectStop(props.id);
         } catch (e) {
-          alert(e.message);
+          showError(e);
         }
         await loadStops(); // bij een fout springt de marker terug, bij succes staat hij op de nieuwe plek
       });
@@ -882,7 +923,7 @@ function wirePanelActions(detail) {
         await selectStop(detail.id);
         await loadStops();
       } catch (e) {
-        alert(e.message);
+        showError(e);
       }
     });
   }
@@ -895,7 +936,7 @@ function wirePanelActions(detail) {
         await selectStop(detail.id);
         await loadStops(); // marker verplaatst zich mee op de kaart
       } catch (e) {
-        alert(e.message);
+        showError(e);
       }
     });
   }
@@ -909,7 +950,7 @@ function wirePanelActions(detail) {
         closePanel();
         await loadStops();
       } catch (e) {
-        alert(e.message);
+        showError(e);
       }
     });
   }
@@ -1119,7 +1160,7 @@ function wireCreateNode() {
             try {
               await submit(true);
             } catch (e2) {
-              alert(e2.message);
+              showError(e2);
             }
           }
         } else {
@@ -1284,7 +1325,7 @@ async function openGroupDialog(picked, after = null) {
           try {
             await submit(true);
           } catch (e2) {
-            alert(e2.message);
+            showError(e2);
           }
         } else {
           after?.(false);
@@ -2001,7 +2042,8 @@ async function init() {
   wireShowDisabledToggle();
   state.showOnlyUnreviewed = initialUnreviewedToggle();
   state.showDisabled = initialDisabledToggle();
-  await Promise.all([loadMe(), loadStopPlaceTypes()]);
+  // Kaart laden ook als een van beide faalt: die heeft ze niet nodig (zonder /api/me = anoniem).
+  await Promise.all([loadMe().catch(showError), loadStopPlaceTypes().catch(showError)]);
   applyUnreviewedToggleUi();
   applyDisabledToggleUi();
   await loadStops();
