@@ -2,6 +2,7 @@ package be.gtfsbe.chb.web;
 
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.GroupCandidate;
+import be.gtfsbe.chb.dto.DuplicateQuay;
 import be.gtfsbe.chb.dto.ModeMismatch;
 import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
@@ -143,6 +144,11 @@ public class PublicStopController {
     @GetMapping("/api/review/mode-mismatches")
     public List<ModeMismatch> modeMismatches() {
         return repository.findModeMismatches();
+    }
+
+    @GetMapping("/api/review/duplicate-quays")
+    public List<DuplicateQuay> duplicateQuays() {
+        return repository.findDuplicateQuays();
     }
 
     @GetMapping("/api/review/feeds")

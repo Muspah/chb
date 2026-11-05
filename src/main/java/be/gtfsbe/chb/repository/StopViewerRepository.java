@@ -1,6 +1,7 @@
 package be.gtfsbe.chb.repository;
 
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
+import be.gtfsbe.chb.dto.DuplicateQuay;
 import be.gtfsbe.chb.dto.GeoJsonFeature;
 import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
 import be.gtfsbe.chb.dto.GeoJsonGeometry;
@@ -252,7 +253,8 @@ public class StopViewerRepository {
     private static final String STOP_PLACE_SQL = """
         SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at,
                ARRAY[g.id, s.id] AS path_ids, ARRAY[g.name, s.name] AS path_names,
-               CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes
+               CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes,
+               ARRAY[]::text[] AS source_stop_codes
         FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
         WHERE s.id = ?
         """;
@@ -275,12 +277,15 @@ public class StopViewerRepository {
     // in het detailpaneel heeft geen eigen toon-toggle; de frontend markeert ze via disabledAt.
     private static final String CHILDREN_SQL = """
         SELECT s.id, s.name, s.public_code, s.disabled_at, false AS is_quay,
-               CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes
+               CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes,
+               ARRAY[]::text[] AS source_stop_codes
         FROM chb.stop s
         WHERE s.parent_id = ? AND s.merged_into_id IS NULL
         AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
         UNION ALL
-        SELECT q.id, q.name, q.public_code, q.disabled_at, true, NULL::text, q.transport_mode, q.other_transport_modes FROM chb.quay q
+        SELECT q.id, q.name, q.public_code, q.disabled_at, true, NULL::text, q.transport_mode, q.other_transport_modes,
+               ARRAY(SELECT DISTINCT r.source_stop_code FROM chb.raw_stop r WHERE r.stop_id = q.id AND r.source_stop_code IS NOT NULL)
+        FROM chb.quay q
         WHERE q.stop_id = ? AND q.merged_into_id IS NULL
         ORDER BY 2
         """;
@@ -299,7 +304,7 @@ public class StopViewerRepository {
                 : "SELECT key, value FROM chb.stop_attribute WHERE stop_id = ? ORDER BY key")
             // Bewust niet via view chb.stop_sources: het ORDER BY daarin blokkeert predicate pushdown
             // (sorteert alle ~130K raw_stop-rijen: ~570 ms per call i.p.v. <1 ms).
-            + ";SELECT rs.source_schema, rs.source_id, rs.name AS source_name FROM chb.quay q"
+            + ";SELECT rs.source_schema, rs.source_id, rs.name AS source_name, rs.source_stop_code FROM chb.quay q"
             + " JOIN chb.raw_stop rs ON rs.stop_id = q.id WHERE q.merged_into_id IS NULL AND q."
             + (quay ? "id" : "stop_id") + " = ? ORDER BY q.name, rs.source_schema"
             + (quay ? "" : ";" + CHILDREN_SQL);
@@ -365,7 +370,8 @@ public class StopViewerRepository {
         List<StopSource> sources = new ArrayList<>();
         ResultSet srcRs = ps.getResultSet();
         while (srcRs.next()) {
-            sources.add(new StopSource(srcRs.getString("source_schema"), srcRs.getString("source_id"), srcRs.getString("source_name")));
+            sources.add(new StopSource(srcRs.getString("source_schema"), srcRs.getString("source_id"), srcRs.getString("source_name"),
+                srcRs.getString("source_stop_code")));
         }
 
         List<StopChildSummary> children = new ArrayList<>();
@@ -378,7 +384,7 @@ public class StopViewerRepository {
                 children.add(new StopChildSummary(childId, childName, names.display(childId, lang, childName),
                     childRs.getString("public_code"), childRs.getObject("disabled_at", OffsetDateTime.class),
                     childRs.getBoolean("is_quay"), childRs.getString("kind"), childRs.getString("transport_mode"),
-                    textArray(childRs, "other_transport_modes")));
+                    textArray(childRs, "other_transport_modes"), textArray(childRs, "source_stop_codes")));
             }
         }
         StopNameCache.Names n = names.get(rowId);
@@ -694,6 +700,27 @@ public class StopViewerRepository {
         return jdbcTemplate.query(sql, (rs, rowNum) -> new ModeMismatch(rs.getLong("quay_id"), rs.getString("name"),
             rs.getString("quay_mode"), rs.getLong("stop_id"), rs.getString("stop_mode"), rs.getBoolean("is_wrapper"),
             rs.getString("source_station")));
+    }
+
+    /**
+     * Dubbele quays binnen één StopPlace (chb#22): zelfde source_stop_code, allebei levend. Ontstaat als een
+     * curator een tweeling-quay verplaatst i.p.v. samenvoegt. Hoort leeg te zijn. Alleen De Lijn (en een
+     * handvol andere bronnen) levert een haltenummer; naam + afstand is geen bruikbaar criterium (TEC-palen
+     * aan weerszijden en NMBS-perrons liggen even dicht bij elkaar). keepId = het oudste id.
+     */
+    public List<DuplicateQuay> findDuplicateQuays() {
+        String sql = """
+            SELECT DISTINCT q2.id AS quay_id, q1.id AS keep_id, q1.stop_id, q1.name, r1.source_stop_code
+            FROM chb.quay q1
+            JOIN chb.quay q2 ON q2.stop_id = q1.stop_id AND q2.id > q1.id
+            JOIN chb.raw_stop r1 ON r1.stop_id = q1.id
+            JOIN chb.raw_stop r2 ON r2.stop_id = q2.id AND r2.source_stop_code = r1.source_stop_code
+            WHERE q1.merged_into_id IS NULL AND q2.merged_into_id IS NULL
+              AND q1.disabled_at IS NULL AND q2.disabled_at IS NULL
+            ORDER BY q1.name, q2.id
+            """;
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new DuplicateQuay(rs.getLong("quay_id"), rs.getLong("keep_id"),
+            rs.getLong("stop_id"), rs.getString("name"), rs.getString("source_stop_code")));
     }
 
     /** Voorstellen uit ndov V143 (#67). Geen paginering: ~750 rijen in ~0,2 s; de lijst filtert client-side. */

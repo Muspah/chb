@@ -366,6 +366,11 @@ button, input, select {
   background: #8a94a3 !important;
 }
 
+.badge-duplicate {
+  background: rgba(198, 40, 40, 0.15);
+  color: #c62828;
+}
+
 .badge-disabled {
   background: rgba(138, 148, 163, 0.2);
   color: var(--ink-700);
@@ -633,7 +638,7 @@ button, input, select {
    een element met het hidden-attribuut toch zichtbaar zodra we er zelf "display" op zetten. */
 #toolbar[hidden],
 #dialog-overlay[hidden],
-.mode-mismatch-count[hidden],
+.review-count[hidden],
 .tbtn[hidden] {
   display: none;
 }
@@ -711,7 +716,7 @@ button, input, select {
   display: inline;
 }
 
-.mode-mismatch-count {
+.review-count {
   display: inline-block;
   min-width: 1.25rem;
   padding: 0 0.3rem;
