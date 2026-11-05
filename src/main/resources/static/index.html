@@ -107,7 +107,7 @@ De Lijn, NMBS/SNCB, TEC and other operators on one searchable map.</p>
         <summary class="tbtn" aria-label="Reports" data-i18n-aria-label="toolbar.reports">
           <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>
           <span class="tbtn-label" data-i18n="toolbar.reports">Reports</span>
-          <span class="mode-mismatch-count" hidden></span>
+          <span class="review-count" data-count="total" hidden></span>
         </summary>
         <div class="reports-menu-items">
         <button id="btn-report" class="tbtn">
@@ -133,7 +133,12 @@ De Lijn, NMBS/SNCB, TEC and other operators on one searchable map.</p>
         <button id="btn-mode-mismatches" class="tbtn">
           <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 3 20h18zM12 10v4M12 17h.01"/></svg>
           <span class="tbtn-label" data-i18n="toolbar.modeMismatches">Mode mismatches</span>
-          <span class="mode-mismatch-count" hidden></span>
+          <span class="review-count" data-count="modeMismatches" hidden></span>
+        </button>
+        <button id="btn-duplicate-quays" class="tbtn">
+          <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="11" height="11" rx="2"/><rect x="9" y="9" width="11" height="11" rx="2"/></svg>
+          <span class="tbtn-label" data-i18n="toolbar.duplicateQuays">Duplicate quays</span>
+          <span class="review-count" data-count="duplicateQuays" hidden></span>
         </button>
         <button id="btn-group-candidates" class="tbtn">
           <svg class="tbtn-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="17" r="2"/><circle cx="18" cy="17" r="2"/><circle cx="12" cy="7" r="2"/><path d="M4 21h16M4 3h16" stroke-dasharray="2 3"/></svg>

@@ -21,6 +21,7 @@ const state = {
   group: { active: false, pickedIds: [] },
   showOnlyUnreviewed: false, // "Kaart: enkel nog te bekijken"-toggle
   showDisabled: false, // "Toon uitgeschakelde haltes"-toggle
+  reviewCounts: { modeMismatches: 0, duplicateQuays: 0 }, // tellers op de rapportenknop
 };
 
 function getCookie(name) {
@@ -43,7 +44,7 @@ async function apiFetch(url, options = {}) {
   } catch (e) {
     throw new Error(t("error.network")); // "Failed to fetch" is onvertaald en zegt de curator niets
   }
-  if (response.ok && options.method && options.method !== "GET") refreshModeMismatches().catch(console.error);
+  if (response.ok && options.method && options.method !== "GET") refreshReviewCounts();
   if (response.status === 204) return null;
   if (!response.ok) {
     let body = null;
@@ -137,7 +138,7 @@ async function loadMe() {
   state.me = await apiFetch("/api/me");
   renderAuthArea();
   document.getElementById("toolbar").hidden = !state.me.curator;
-  if (state.me.curator) refreshModeMismatches().catch(console.error);
+  if (state.me.curator) refreshReviewCounts();
 }
 
 // --- StopPlaceType (NeTEx StopTypeEnumeration, chb.stop_place_type) -----
@@ -214,7 +215,7 @@ function refreshDynamicUiForLangChange() {
   applyLangSwitchUi();
   applyUnreviewedToggleUi();
   applyDisabledToggleUi();
-  renderModeMismatchCount();
+  renderReviewCounts();
   if (state.group.active) updateGroupStatus();
   if (state.merge.active) renderMergeStatus();
   // Haltenamen hangen van de taal af: kaart en paneel opnieuw ophalen.
@@ -676,6 +677,7 @@ function renderPanel(detail, history) {
     ? detail.sources.map((s) => escapeHtml(`${s.sourceSchema}:${s.sourceId} (${s.sourceName})`)).join(", ")
     : t("panel.syntheticNoSource");
 
+  const duplicates = duplicateQuaysAmong(detail.children);
   const childrenSection = detail.children.length ? `
     <section>
       <h3>${escapeHtml(t("panel.childrenHeading", { count: detail.children.length }))}</h3>
@@ -683,7 +685,7 @@ function renderPanel(detail, history) {
       <table><tbody>
         ${detail.children.map((c) => `
           <tr class="child-row${c.disabledAt ? " child-row-disabled" : ""}" data-id="${c.id}" style="cursor:pointer"${c.disabledAt ? ` title="${escapeHtml(t("panel.disabledSince", { date: formatTimestamp(c.disabledAt) }))}"` : ""}>
-            <td>${escapeHtml(c.displayName)}${c.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : kindBadge(c.kind)}${c.disabledAt ? ` <span class="badge badge-disabled">${escapeHtml(t("panel.disabledBadge"))}</span>` : ""}</td>
+            <td>${escapeHtml(c.displayName)}${c.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : kindBadge(c.kind)}${c.disabledAt ? ` <span class="badge badge-disabled">${escapeHtml(t("panel.disabledBadge"))}</span>` : ""}${duplicateBadge(c, duplicates.get(c.id))}</td>
             <td>${escapeHtml(c.publicCode || "")}</td>
             <td class="hint-text">${escapeHtml(modesText(c))}</td>
           </tr>`).join("")}
@@ -830,9 +832,10 @@ function renderEditSections(detail) {
         <label>${escapeHtml(t("panel.publicCode"))} ${helpLink("publicCode")}
           <input name="publicCode" value="${escapeHtml(detail.publicCode || "")}"${locked}>
         </label>
-        <label>${escapeHtml(t("panel.parentIdLabel"))}
+        <label${detail.isQuay ? ` title="${escapeHtml(t("panel.moveIsNotMerge"))}"` : ""}>${escapeHtml(t("panel.parentIdLabel"))}
           <input name="parentId" type="number" value="${detail.parentId != null ? detail.parentId : ""}">
         </label>
+        ${detail.isQuay ? `<p class="hint-text">${escapeHtml(t("panel.moveIsNotMerge"))}</p>` : ""}
         <button type="button" class="secondary" id="pick-parent">${escapeHtml(t("panel.pickParent"))}</button>
         <button type="submit">${escapeHtml(t("common.save"))}</button>
         <span class="error-text" id="edit-error"></span>
@@ -890,6 +893,12 @@ function wirePanelActions(detail) {
 
   document.querySelectorAll(".child-row").forEach((row) => {
     row.addEventListener("click", () => selectStop(Number(row.dataset.id)));
+  });
+  document.querySelectorAll(".duplicate-merge-btn").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation(); // niet ook de rij openen
+      confirmMerge(Number(btn.dataset.source), Number(btn.dataset.target)).catch(console.error);
+    });
   });
 
   const reviewBtn = document.getElementById("review-btn");
@@ -1005,10 +1014,16 @@ function wirePanelActions(detail) {
         publicCode: editForm.elements.publicCode.value || null,
         parentId,
       };
-      try {
+      const save = async () => {
         await apiFetch("/api/stops/" + detail.id, { method: "PATCH", body: JSON.stringify(body) });
         await loadStops();
         await selectStop(detail.id);
+      };
+      try {
+        const twin = detail.isQuay && parentId != null && parentId !== detail.parentId
+          ? await findTwinQuay(detail, parentId) : null;
+        if (twin) confirmMoveOntoTwin(detail, twin, save);
+        else await save();
       } catch (e) {
         showActionError(errorEl, e);
       }
@@ -1420,6 +1435,65 @@ function operatorsDiffer(a, b) {
   return ops(a).size > 0 && ops(b).size > 0 && all.size > 1;
 }
 
+// --- Dubbele quays (chb#22) -------------------------------------------------
+// Twee levende quays met een gemeenschappelijk bron-haltenummer zijn dezelfde paal. Dat ontstaat als een curator
+// de tweeling-quay naar de StopPlace verplaatst i.p.v. samenvoegt. Voorstel: de jongste (hoogste id) gaat op in
+// de oudste, die al in de StopPlace zat. Naam + afstand is geen criterium: TEC-palen aan weerszijden van de
+// straat en NMBS-perrons liggen even dicht bij elkaar en hebben geen haltenummer.
+
+const sharesStopCode = (codesA, codesB) => codesA.some((code) => codesB.includes(code));
+const isLiveQuay = (c) => c.isQuay && !c.disabledAt;
+
+/** Map dubbel-quay-id -> te behouden quay-id, binnen de kinderen van één StopPlace. */
+function duplicateQuaysAmong(children) {
+  const live = children.filter(isLiveQuay).sort((a, b) => a.id - b.id);
+  const result = new Map();
+  live.forEach((c, i) => {
+    const keep = live.slice(0, i).find((k) => sharesStopCode(k.sourceStopCodes, c.sourceStopCodes));
+    if (keep) result.set(c.id, keep.id);
+  });
+  return result;
+}
+
+function duplicateBadge(child, keepId) {
+  if (keepId == null) return "";
+  const badge = ` <span class="badge badge-duplicate" title="${escapeHtml(t("duplicateQuays.hint"))}">${escapeHtml(t("duplicateQuays.badge", { id: keepId }))}</span>`;
+  return state.me.curator
+    ? `${badge} <button type="button" class="secondary duplicate-merge-btn" data-source="${child.id}" data-target="${keepId}">${escapeHtml(t("duplicateQuays.merge"))}</button>`
+    : badge;
+}
+
+/** Levende quay in de doel-StopPlace met een haltenummer van deze quay, of null. */
+async function findTwinQuay(quay, targetStopId) {
+  const codes = quay.sources.map((s) => s.sourceStopCode).filter(Boolean);
+  if (!codes.length) return null;
+  const target = await apiFetch("/api/stops/" + targetStopId);
+  return target.children.find((c) => isLiveQuay(c) && c.id !== quay.id && sharesStopCode(c.sourceStopCodes, codes)) || null;
+}
+
+function confirmMoveOntoTwin(quay, twin, save) {
+  showDialog(`
+    <h2>${escapeHtml(t("duplicateQuays.moveTitle"))} ${helpLink("merge")}</h2>
+    <p>${escapeHtml(t("duplicateQuays.moveWarning", { quay: quay.id, twin: twin.id, name: twin.displayName, codes: twin.sourceStopCodes.join(", ") }))}</p>
+    <span class="error-text" id="move-error"></span>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="move-cancel">${escapeHtml(t("common.cancel"))}</button>
+      <button type="button" class="secondary" id="move-anyway">${escapeHtml(t("duplicateQuays.moveAnyway"))}</button>
+      <button type="button" id="move-merge">${escapeHtml(t("duplicateQuays.mergeInstead", { id: twin.id }))}</button>
+    </div>
+  `);
+  document.getElementById("move-cancel").addEventListener("click", closeDialog);
+  document.getElementById("move-anyway").addEventListener("click", async () => {
+    try {
+      await save();
+      closeDialog();
+    } catch (e) {
+      showActionError(document.getElementById("move-error"), e);
+    }
+  });
+  document.getElementById("move-merge").addEventListener("click", () => confirmMerge(quay.id, twin.id).catch(console.error));
+}
+
 async function confirmMerge(pickedSourceId, pickedTargetId) {
   const [source, target] = await Promise.all([
     apiFetch("/api/stops/" + pickedSourceId),
@@ -1477,6 +1551,7 @@ function wireReport() {
   document.getElementById("btn-tec-cities").addEventListener("click", openTecCitiesDialog);
   document.getElementById("btn-multimode-quays").addEventListener("click", openMultimodeQuaysDialog);
   document.getElementById("btn-mode-mismatches").addEventListener("click", openModeMismatchesDialog);
+  document.getElementById("btn-duplicate-quays").addEventListener("click", openDuplicateQuaysDialog);
   document.getElementById("btn-group-candidates").addEventListener("click", openGroupCandidatesDialog);
   // Dicht bij een klik op een rapport of ernaast, en met Escape.
   const menu = document.getElementById("reports-menu");
@@ -1923,27 +1998,45 @@ async function openGroupCandidatesDialog() {
   if (document.getElementById("candidates-search")) render();
 }
 
-// Het enige signaal voor deze afwijkingen (ndov#75): de teller staat op de altijd zichtbare menuknop.
-// Ververst bij het laden en na elke schrijfactie; een import zie je pas na herladen.
+// Het enige signaal voor deze afwijkingen (ndov#75, chb#22): de tellers staan op de altijd zichtbare menuknop.
+// Verversen bij het laden en na elke schrijfactie; een import zie je pas na herladen.
+
+function refreshReviewCounts() {
+  refreshModeMismatches().catch(console.error);
+  refreshDuplicateQuays().catch(console.error);
+}
+
 async function refreshModeMismatches() {
   const rows = await apiFetch("/api/review/mode-mismatches");
-  state.modeMismatchCount = rows.length;
-  renderModeMismatchCount();
+  state.reviewCounts.modeMismatches = rows.length;
+  renderReviewCounts();
   return rows;
 }
 
-function renderModeMismatchCount() {
-  const n = state.modeMismatchCount || 0;
-  for (const badge of document.querySelectorAll(".mode-mismatch-count")) {
+async function refreshDuplicateQuays() {
+  const rows = await apiFetch("/api/review/duplicate-quays");
+  state.reviewCounts.duplicateQuays = rows.length;
+  renderReviewCounts();
+  return rows;
+}
+
+function renderReviewCounts() {
+  const counts = state.reviewCounts;
+  const total = counts.modeMismatches + counts.duplicateQuays;
+  for (const badge of document.querySelectorAll(".review-count")) {
+    const n = badge.dataset.count === "total" ? total : counts[badge.dataset.count];
     badge.textContent = n;
     badge.hidden = n === 0;
   }
-  // De aria-label van de knop gaat voor op zijn tekst, dus de teller moet er ook in.
+  // De aria-label van de knop gaat voor op zijn tekst, dus de tellers moeten er ook in.
   const reports = t("toolbar.reports");
-  const label = n ? `${reports} (${t("modeMismatches.count", { n })})` : reports;
+  const parts = [];
+  if (counts.modeMismatches) parts.push(t("modeMismatches.count", { n: counts.modeMismatches }));
+  if (counts.duplicateQuays) parts.push(t("duplicateQuays.count", { n: counts.duplicateQuays }));
+  const label = parts.length ? `${reports} (${parts.join(", ")})` : reports;
   const summary = document.querySelector("#reports-menu summary");
   summary.setAttribute("aria-label", label);
-  summary.title = n ? label : "";
+  summary.title = parts.length ? label : "";
 }
 
 // chb.stop_place_mode_mismatch (V149) en chb.source_station_mode_mismatch (V144): horen leeg te zijn.
@@ -1974,6 +2067,36 @@ async function openModeMismatchesDialog() {
     li.addEventListener("click", () => {
       closeDialog();
       selectStop(row.quayId);
+    });
+    list.appendChild(li);
+  }
+}
+
+// chb#22: hoort leeg te zijn. Samenvoegen gaat via de gewone merge-dialoog, met de voorgestelde richting.
+async function openDuplicateQuaysDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.duplicateQuays"))} ${helpLink("merge")}</h2>
+    <p class="hint-text">${escapeHtml(t("duplicateQuays.listHint"))}</p>
+    <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="duplicate-quays-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("duplicate-quays-close").addEventListener("click", closeDialog);
+  const rows = await refreshDuplicateQuays();
+  const list = document.getElementById("names-list");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = rows.length ? "" : `<li class="report-item">${escapeHtml(t("duplicateQuays.none"))}</li>`;
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.className = "report-item";
+    li.innerHTML = `${escapeHtml(row.name)}<div class="report-item-sub">${escapeHtml(t("duplicateQuays.row",
+      { quay: row.quayId, keep: row.keepId, stop: row.stopId, code: row.sourceStopCode }))}</div>`;
+    li.addEventListener("click", () => {
+      closeDialog();
+      selectStop(row.stopId);
     });
     list.appendChild(li);
   }
