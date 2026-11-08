@@ -809,7 +809,8 @@ function attributeRow(stopId, key, value) {
       <td>${escapeHtml(key)}</td>
       <td>${escapeHtml(value)}</td>
       <td>${state.me.curator
-        ? `<button class="secondary attr-delete" data-key="${escapeHtml(key)}">${escapeHtml(t("panel.attrDelete"))}</button>`
+        ? `<button class="secondary attr-edit" data-key="${escapeHtml(key)}" data-value="${escapeHtml(value)}">${escapeHtml(t("panel.attrEdit"))}</button>
+           <button class="secondary attr-delete" data-key="${escapeHtml(key)}">${escapeHtml(t("panel.attrDelete"))}</button>`
         : ""}</td>
     </tr>`;
 }
@@ -1033,6 +1034,16 @@ function wirePanelActions(detail) {
 
   const attrForm = document.getElementById("attr-form");
   if (attrForm) {
+    // Wijzigen = hetzelfde upsert-formulier, vooraf ingevuld.
+    document.querySelectorAll(".attr-edit").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        attrForm.elements.key.value = btn.dataset.key;
+        attrForm.elements.value.value = btn.dataset.value;
+        attrForm.scrollIntoView({ block: "nearest" });
+        attrForm.elements.value.focus();
+        attrForm.elements.value.select();
+      });
+    });
     attrForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const errorEl = document.getElementById("attr-error");
