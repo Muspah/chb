@@ -6,6 +6,8 @@ import be.gtfsbe.chb.dto.UpdateStopRequest;
 import be.gtfsbe.chb.service.EditorTransactionRunner;
 import org.springframework.stereotype.Repository;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -23,10 +25,15 @@ import java.util.stream.Collectors;
 @Repository
 public class StopEditorRepository {
 
-    private final EditorTransactionRunner runner;
+    /** Zelfde sleutelpatroon als de curated-CTE's in chb.quay_names / chb.stop_names. */
+    private static final Pattern NAME_KEY = Pattern.compile("^name_([a-z]{2,3})$");
 
-    public StopEditorRepository(EditorTransactionRunner runner) {
+    private final EditorTransactionRunner runner;
+    private final StopNameCache names;
+
+    public StopEditorRepository(EditorTransactionRunner runner, StopNameCache names) {
         this.runner = runner;
+        this.names = names;
     }
 
     public long createStop(String currentUser, CreateStopRequest r) {
@@ -50,6 +57,10 @@ public class StopEditorRepository {
 
     public void upsertAttribute(String currentUser, long stopId, String key, String value) {
         call(currentUser, "SELECT chb.set_attribute(?, ?, ?)", stopId, key, value);
+        Matcher m = NAME_KEY.matcher(key);
+        if (m.matches() && value != null && !value.isEmpty()) {
+            names.putCuratedName(stopId, m.group(1), value);
+        }
     }
 
     public void deleteAttribute(String currentUser, long stopId, String key) {

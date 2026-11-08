@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -61,6 +62,31 @@ public class StopNameCache {
                 refresh();
             });
         }
+    }
+
+    /**
+     * Curator zette {@code name_<taal>} op {@code id}: zet die naam meteen in de cache, zodat de wijziging niet
+     * op de volledige verversing (5-10 s) hoeft te wachten. Per id herladen kan niet, {@code stop_names WHERE
+     * stop_id = ?} kost evenveel als alles. Een curatornaam wint in beide views altijd voor zijn taal; de default
+     * volgt alleen als het de taal van de default is. Reden, parent-general en verwijderen: {@link #refreshSoon()}.
+     */
+    public void putCuratedName(long id, String lang, String value) {
+        if (stops.containsKey(id)) {
+            stops = withName(stops, id, lang, value);
+        } else if (quays.containsKey(id)) {
+            quays = withName(quays, id, lang, value);
+        }
+    }
+
+    // ponytail: kopie van de hele map (~70K items, enkele ms) per curatornaam; volstaat bij menselijk tempo.
+    private static Map<Long, Names> withName(Map<Long, Names> map, long id, String lang, String value) {
+        Names n = map.get(id);
+        Map<String, String> names = new TreeMap<>(n.names());
+        names.put(lang, value);
+        boolean isDefault = lang.equals(n.defaultLang());
+        Map<Long, Names> copy = new HashMap<>(map);
+        copy.put(id, new Names(names, isDefault ? value : n.defaultName(), n.defaultLang(), n.nameReason()));
+        return copy;
     }
 
     private void refresh() {
