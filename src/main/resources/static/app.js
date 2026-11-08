@@ -714,12 +714,13 @@ function renderPanel(detail, history) {
       <button class="danger" id="delete-btn">${escapeHtml(t("panel.deleteNode"))}</button>
     </section>` : "";
 
-  const moveSection = state.me.curator && !detail.isQuay ? `
+  // Ook een quay (stip binnen het vlak van zijn groep) is versleepbaar; chb.set_location/reset_location kennen het quay-niveau.
+  const moveSection = state.me.curator ? `
     <section>
       <h3>${escapeHtml(t("panel.locationHeading"))}</h3>
       <p class="hint-text">${escapeHtml(t("panel.moveHint"))}</p>
       <button class="secondary" id="move-location-btn">${escapeHtml(t("panel.moveLocation"))}</button>
-      ${detail.isWrapper ? `<button class="secondary" id="reset-location-btn">${escapeHtml(t("panel.resetLocation"))}</button>` : ""}
+      ${detail.isWrapper || detail.isQuay ? `<button class="secondary" id="reset-location-btn">${escapeHtml(t("panel.resetLocation"))}</button>` : ""}
     </section>` : "";
 
   const recomputeSection = state.me.curator && detail.isSynthetic && !detail.isWrapper && detail.children.length ? `
