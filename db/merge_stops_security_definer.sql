@@ -29,6 +29,5 @@ GRANT SELECT ON chb.raw_stop TO chb_editor;
 -- draait dus met de rechten van chb_editor zelf zodra die een INSERT/UPDATE doet — die trigger
 -- heeft dus INSERT nodig, ook al roept de app die nooit rechtstreeks aan.
 GRANT SELECT, INSERT ON chb.stop_change_log TO chb_editor;
-GRANT SELECT ON chb.stop_tree TO chb_editor;
 GRANT SELECT ON chb.stop_sources TO chb_editor;
 GRANT EXECUTE ON FUNCTION chb.merge_stops(bigint, bigint) TO chb_editor;

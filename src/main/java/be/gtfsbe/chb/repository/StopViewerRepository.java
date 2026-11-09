@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
  * sturen.
  *
  * <p>Kolomnamen van {@code chb.stop}, {@code chb.stop_attribute}, {@code chb.stop_change_log},
- * {@code chb.raw_stop}, {@code chb.stop_tree} (V7) en {@code chb.stop_sources} (V7) zijn
+ * {@code chb.raw_stop} en {@code chb.stop_sources} (V7) zijn
  * overgenomen uit de effectieve DDL uit de gtfs-import-repo.
  */
 @Repository
