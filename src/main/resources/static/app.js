@@ -1563,6 +1563,7 @@ function wireReport() {
   document.getElementById("btn-tec-cities").addEventListener("click", openTecCitiesDialog);
   document.getElementById("btn-multimode-quays").addEventListener("click", openMultimodeQuaysDialog);
   document.getElementById("btn-mode-mismatches").addEventListener("click", openModeMismatchesDialog);
+  document.getElementById("btn-brussels-names").addEventListener("click", openBrusselsNamesDialog);
   document.getElementById("btn-duplicate-quays").addEventListener("click", openDuplicateQuaysDialog);
   document.getElementById("btn-group-candidates").addEventListener("click", openGroupCandidatesDialog);
   // Dicht bij een klik op een rapport of ernaast, en met Escape.
@@ -2111,6 +2112,100 @@ async function openDuplicateQuaysDialog() {
       selectStop(row.stopId);
     });
     list.appendChild(li);
+  }
+}
+
+// Brusselse StopPlace-namen (chb#24, Business Rules §7). Deel 1 hoort leeg te zijn, deel 2 is een werklijst.
+async function openBrusselsNamesDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.brusselsNames"))}</h2>
+    <p class="hint-text">${escapeHtml(t("brusselsNames.hint"))}</p>
+    <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <h3>${escapeHtml(t("brusselsNames.pairsHeading"))}</h3>
+    <p class="hint-text">${escapeHtml(t("brusselsNames.pairsHint"))}</p>
+    <ul id="bru-pairs"></ul>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="bru-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("bru-close").addEventListener("click", closeDialog);
+  const report = await apiFetch("/api/review/brussels-names");
+  const list = document.getElementById("names-list");
+  if (!list) {
+    return;
+  }
+  const rows = report.stopPlaces;
+
+  function renderStopPlaces() {
+    list.innerHTML = rows.length ? "" : `<li class="report-item">${escapeHtml(t("brusselsNames.none"))}</li>`;
+    for (const row of rows) {
+      const sub = [
+        row.blocking ? t("brusselsNames.blocking", { langs: row.disagreeLangs.join(", ") }) : t("brusselsNames.deviates"),
+        t("kind." + row.kind) + (row.transportMode ? " · " + row.transportMode : ""),
+        row.expected ? t("brusselsNames.expected", { name: row.expected }) : null,
+        row.nameReason,
+        row.curatorFr || row.curatorNl ? t("brusselsNames.curator", { fr: row.curatorFr || "–", nl: row.curatorNl || "–" }) : null,
+        row.sources.join(", "),
+      ].filter(Boolean).join(" · ");
+      const li = document.createElement("li");
+      li.className = "report-item tec-city-row";
+      li.innerHTML = `<div class="tec-city-name">${escapeHtml(row.defaultName || String(row.id))}
+          <div class="report-item-sub">${escapeHtml(sub)}</div></div>
+        ${row.mivbFr && row.mivbNl ? `<button type="button">${escapeHtml(t("brusselsNames.adopt"))}</button>` : ""}
+        <div class="error-text"></div>`;
+      li.querySelector(".tec-city-name").addEventListener("click", () => {
+        closeDialog();
+        selectStop(row.id);
+      });
+      const button = li.querySelector("button");
+      if (button) {
+        button.addEventListener("click", async () => {
+          const errorEl = li.querySelector(".error-text");
+          errorEl.textContent = "";
+          button.disabled = true;
+          try {
+            for (const [key, value] of [["name_fr", row.mivbFr], ["name_nl", row.mivbNl]]) {
+              await apiFetch("/api/stops/" + row.id + "/attributes/" + key, { method: "PUT", body: JSON.stringify({ value }) });
+            }
+            rows.splice(rows.indexOf(row), 1);
+            renderStopPlaces();
+          } catch (e) {
+            button.disabled = false;
+            showActionError(errorEl, e);
+          }
+        });
+      }
+      list.appendChild(li);
+    }
+  }
+  renderStopPlaces();
+
+  // Per MIVB-naam gegroepeerd: één groepering lost meestal alle paren van die naam op.
+  const groups = new Map();
+  for (const pair of report.pairs) {
+    const name = pair.mivbFr === pair.mivbNl ? pair.mivbFr : pair.mivbFr + " / " + pair.mivbNl;
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(pair);
+  }
+  const pairList = document.getElementById("bru-pairs");
+  pairList.innerHTML = groups.size ? "" : `<li class="report-item">${escapeHtml(t("brusselsNames.noPairs"))}</li>`;
+  for (const [name, pairs] of groups) {
+    const groupLi = document.createElement("li");
+    groupLi.className = "report-group";
+    groupLi.innerHTML = `<div class="report-group-heading">${escapeHtml(name)}</div><ul></ul>`;
+    for (const pair of pairs) {
+      const li = document.createElement("li");
+      li.className = "report-item";
+      const other = [pair.otherFr, pair.otherNl].filter(Boolean).join(" / ");
+      li.innerHTML = `${escapeHtml(other)}<div class="report-item-sub">${escapeHtml(t("brusselsNames.pair", {
+        mivb: pair.mivbQuay, other: pair.otherQuay, source: pair.otherSource, mode: pair.transportMode, distance: pair.distanceM }))}</div>`;
+      li.addEventListener("click", () => {
+        closeDialog();
+        selectStop(pair.mivbQuay);
+      });
+      groupLi.querySelector("ul").appendChild(li);
+    }
+    pairList.appendChild(groupLi);
   }
 }
 

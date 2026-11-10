@@ -27,7 +27,9 @@ import java.util.stream.Collectors;
 @Component
 public class StopNameCache {
 
-    public record Names(Map<String, String> names, String defaultName, String defaultLang, String nameReason) {
+    /** {@code disagreeLangs} alleen voor StopPlaces (quay_names heeft geen botsing), anders leeg. */
+    public record Names(Map<String, String> names, String defaultName, String defaultLang, String nameReason,
+                        String region, List<String> disagreeLangs) {
     }
 
     private static final Logger log = LoggerFactory.getLogger(StopNameCache.class);
@@ -35,7 +37,7 @@ public class StopNameCache {
     // names jsonb als "taal=naam"-array: geen JSON-parser nodig; een taalcode bevat nooit '='.
     private static final String SQL = """
         SELECT %s AS id, ARRAY(SELECT key || '=' || value FROM jsonb_each_text(names) ORDER BY key) AS names,
-               default_name, default_lang, name_reason
+               default_name, default_lang, name_reason, region, %s AS disagree_langs
         FROM %s
         """;
 
@@ -85,15 +87,16 @@ public class StopNameCache {
         names.put(lang, value);
         boolean isDefault = lang.equals(n.defaultLang());
         Map<Long, Names> copy = new HashMap<>(map);
-        copy.put(id, new Names(names, isDefault ? value : n.defaultName(), n.defaultLang(), n.nameReason()));
+        copy.put(id, new Names(names, isDefault ? value : n.defaultName(), n.defaultLang(), n.nameReason(), n.region(),
+            n.disagreeLangs()));
         return copy;
     }
 
     private void refresh() {
         try {
             long start = System.nanoTime();
-            quays = load("quay_id", "chb.quay_names");
-            stops = load("stop_id", "chb.stop_names");
+            quays = load("quay_id", "chb.quay_names", "NULL::text[]");
+            stops = load("stop_id", "chb.stop_names", "disagree_langs");
             log.info("Namencache ververst: {} StopPlaces, {} quays in {} ms", stops.size(), quays.size(),
                 (System.nanoTime() - start) / 1_000_000);
         } catch (RuntimeException e) {
@@ -101,16 +104,17 @@ public class StopNameCache {
         }
     }
 
-    private Map<Long, Names> load(String idColumn, String view) {
+    private Map<Long, Names> load(String idColumn, String view, String disagreeColumn) {
         Map<Long, Names> result = new HashMap<>();
-        jdbcTemplate.query(SQL.formatted(idColumn, view), rs -> {
+        jdbcTemplate.query(SQL.formatted(idColumn, disagreeColumn, view), rs -> {
             Map<String, String> names = new LinkedHashMap<>();
+            java.sql.Array disagree = rs.getArray("disagree_langs");
             for (String pair : (String[]) rs.getArray("names").getArray()) {
                 int eq = pair.indexOf('=');
                 names.put(pair.substring(0, eq), pair.substring(eq + 1));
             }
             result.put(rs.getLong("id"), new Names(names, rs.getString("default_name"), rs.getString("default_lang"),
-                rs.getString("name_reason")));
+                rs.getString("name_reason"), rs.getString("region"), disagree == null ? List.of() : List.of((String[]) disagree.getArray())));
         });
         return result;
     }
@@ -118,6 +122,20 @@ public class StopNameCache {
     public Names get(long id) {
         Names n = stops.get(id);
         return n != null ? n : quays.get(id);
+    }
+
+    /** Id's van StopPlaces ({@code stops}) of quays in {@code region}, uit de laatste verversing. */
+    public Map<Long, Names> stopsInRegion(String region) {
+        return inRegion(stops, region);
+    }
+
+    public Map<Long, Names> quaysInRegion(String region) {
+        return inRegion(quays, region);
+    }
+
+    private static Map<Long, Names> inRegion(Map<Long, Names> map, String region) {
+        return map.entrySet().stream().filter(e -> region.equals(e.getValue().region()))
+            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     /** Naam in de UI-taal als de bron die levert, anders de default van het taalgebied, anders de kale naam. */

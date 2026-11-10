@@ -1,5 +1,6 @@
 package be.gtfsbe.chb.repository;
 
+import be.gtfsbe.chb.dto.BrusselsNames;
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.DuplicateQuay;
 import be.gtfsbe.chb.dto.GeoJsonFeature;
@@ -20,13 +21,17 @@ import be.gtfsbe.chb.dto.StopSearchResult;
 import be.gtfsbe.chb.dto.StopSource;
 import be.gtfsbe.chb.dto.TecCityIssue;
 import be.gtfsbe.chb.dto.UnreviewedStop;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -721,6 +726,115 @@ public class StopViewerRepository {
             """;
         return jdbcTemplate.query(sql, (rs, rowNum) -> new DuplicateQuay(rs.getLong("quay_id"), rs.getLong("keep_id"),
             rs.getLong("stop_id"), rs.getString("name"), rs.getString("source_stop_code")));
+    }
+
+    /**
+     * Brusselse StopPlace-namen (chb#24), naar ndov contrib/brussel-namen-overzicht.sql. Regio, default_name,
+     * name_reason en disagree_langs komen uit de namencache: stop_names lezen kost ~10-25 s en filtert niet op id.
+     * quay_names filtert wel op id, dus de rest beperkt zich tot de Brusselse id's (~1-2 s per deel).
+     */
+    public BrusselsNames findBrusselsNames() {
+        Map<Long, StopNameCache.Names> stops = names.stopsInRegion("bru");
+        Map<Long, StopNameCache.Names> quays = names.quaysInRegion("bru");
+        if (stops.isEmpty() || quays.isEmpty()) {
+            // Lege cache (opstart): een leeg rapport zou "in orde" melden.
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Namencache nog niet geladen");
+        }
+        Long[] stopIds = stops.keySet().toArray(Long[]::new);
+        List<BrusselsNames.StopPlace> stopPlaces = new ArrayList<>();
+        jdbcTemplate.query("""
+            WITH live_stop AS (
+                SELECT s.* FROM chb.stop s
+                WHERE s.merged_into_id IS NULL AND s.disabled_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = 'deleted_at')
+            ),
+            -- elke live quay onder zijn monomodal én (indien aanwezig) de general
+            stop_quay AS (
+                SELECT s.id AS stop_id, q.id AS quay_id FROM live_stop s JOIN chb.quay q ON q.stop_id = s.id
+                WHERE s.id = ANY(?) AND q.merged_into_id IS NULL AND q.disabled_at IS NULL
+                UNION ALL
+                SELECT s.parent_id, q.id FROM live_stop s JOIN chb.quay q ON q.stop_id = s.id
+                WHERE s.parent_id = ANY(?) AND q.merged_into_id IS NULL AND q.disabled_at IS NULL
+            ),
+            per_stop AS (
+                SELECT sq.stop_id,
+                       bool_or(r.source_schema = 'mivbstib') AND NOT bool_or(r.source_schema IN ('nmbssncb', 'bmc_nmbssncb')) AS expect_mivb,
+                       array_agg(DISTINCT r.source_schema ORDER BY r.source_schema) AS sources,
+                       array_agg(DISTINCT qn.names ->> 'fr') FILTER (WHERE r.source_schema = 'mivbstib') AS mivb_fr,
+                       array_agg(DISTINCT qn.names ->> 'nl') FILTER (WHERE r.source_schema = 'mivbstib') AS mivb_nl
+                FROM stop_quay sq
+                JOIN chb.raw_stop r ON r.stop_id = sq.quay_id
+                JOIN chb.quay_names qn ON qn.quay_id = sq.quay_id AND qn.quay_id = ANY(ARRAY(SELECT quay_id FROM stop_quay))
+                GROUP BY sq.stop_id
+            )
+            SELECT s.id, s.kind, s.transport_mode, p.sources, p.expect_mivb, p.mivb_fr, p.mivb_nl,
+                   (SELECT a.value FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = 'name_fr') AS cur_fr,
+                   (SELECT a.value FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = 'name_nl') AS cur_nl
+            FROM live_stop s JOIN per_stop p ON p.stop_id = s.id
+            WHERE s.id = ANY(?)
+            """, rs -> {
+            StopNameCache.Names n = stops.get(rs.getLong("id"));
+            List<String> sources = textArray(rs, "sources");
+            // Arrays.asList: een MIVB-quay zonder fr/nl geeft een null-element.
+            List<String> fr = rs.getArray("mivb_fr") == null ? List.of() : Arrays.asList((String[]) rs.getArray("mivb_fr").getArray());
+            List<String> nl = rs.getArray("mivb_nl") == null ? List.of() : Arrays.asList((String[]) rs.getArray("mivb_nl").getArray());
+            String mivbFr = null;
+            String mivbNl = null;
+            String expected = null;
+            if (rs.getBoolean("expect_mivb")) {
+                if (fr.size() == 1 && nl.size() == 1 && fr.get(0) != null && nl.get(0) != null) {
+                    mivbFr = fr.get(0);
+                    mivbNl = nl.get(0);
+                    expected = mivbFr.equals(mivbNl) ? mivbFr : mivbFr + " / " + mivbNl;
+                } else {
+                    // MIVB is het oneens met zichzelf: geen verwachting om over te nemen, wel tonen.
+                    List<String> all = new ArrayList<>(fr);
+                    all.addAll(nl);
+                    expected = "(" + all.stream().map(String::valueOf).collect(Collectors.joining(" | ")) + ")";
+                }
+            }
+            String reason = n.nameReason();
+            boolean blocking = !n.disagreeLangs().isEmpty() || "bru_disagree".equals(reason);
+            // niet getoond: general_main_mode_child (opgelost via V156) en Eurostar-only (besluit: zo laten)
+            boolean otherReason = reason != null && !reason.equals("general_main_mode_child") && !sources.equals(List.of("eurostar"));
+            if (blocking || otherReason || (expected != null && !expected.equals(n.defaultName()))) {
+                stopPlaces.add(new BrusselsNames.StopPlace(rs.getLong("id"), blocking, rs.getString("kind"),
+                    rs.getString("transport_mode"), n.defaultName(), expected, mivbFr, mivbNl, reason, n.disagreeLangs(),
+                    rs.getString("cur_fr"), rs.getString("cur_nl"), sources));
+            }
+        }, stopIds, stopIds, stopIds);
+        stopPlaces.sort(Comparator.comparing((BrusselsNames.StopPlace s) -> !s.blocking())
+            .thenComparing(BrusselsNames.StopPlace::kind)
+            .thenComparing(BrusselsNames.StopPlace::defaultName, Comparator.nullsLast(Comparator.naturalOrder())));
+
+        List<BrusselsNames.Pair> pairs = jdbcTemplate.query("""
+            WITH live_quay AS (
+                SELECT q.id, q.geom, q.transport_mode, q.stop_id, qn.names,
+                       (SELECT string_agg(DISTINCT r.source_schema, ',' ORDER BY r.source_schema) FROM chb.raw_stop r WHERE r.stop_id = q.id) AS source,
+                       -- vooraf: een regex per paar in de self-join kost seconden
+                       EXISTS (SELECT 1 FROM chb.raw_stop r WHERE r.stop_id = q.id AND r.source_schema ~ '(delijn|tec)') AS is_other
+                FROM chb.quay q
+                JOIN chb.stop s ON s.id = q.stop_id
+                JOIN chb.quay_names qn ON qn.quay_id = q.id AND qn.quay_id = ANY(?)
+                WHERE q.id = ANY(?) AND q.merged_into_id IS NULL AND q.disabled_at IS NULL AND s.merged_into_id IS NULL
+            )
+            SELECT m.id AS mivb_quay, m.names ->> 'fr' AS mivb_fr, m.names ->> 'nl' AS mivb_nl, m.transport_mode,
+                   o.id AS other_quay, o.source AS other_source, o.names ->> 'fr' AS other_fr, o.names ->> 'nl' AS other_nl,
+                   round(st_distance(m.geom::geography, o.geom::geography))::int AS distance_m
+            FROM live_quay m
+            JOIN live_quay o ON o.transport_mode = m.transport_mode AND o.stop_id <> m.stop_id
+             AND m.geom && st_expand(o.geom, 0.0005) AND st_dwithin(m.geom::geography, o.geom::geography, 30)
+            WHERE m.source = 'mivbstib' AND o.is_other
+              -- alleen een taal die beide leveren kan botsen (De Lijn levert geen fr)
+              AND ((o.names ->> 'nl' IS NOT NULL AND o.names ->> 'nl' IS DISTINCT FROM m.names ->> 'nl')
+                OR (o.names ->> 'fr' IS NOT NULL AND o.names ->> 'fr' IS DISTINCT FROM m.names ->> 'fr'))
+            ORDER BY m.names ->> 'fr', m.id, distance_m
+            """,
+            (rs, rowNum) -> new BrusselsNames.Pair(rs.getLong("mivb_quay"), rs.getString("mivb_fr"), rs.getString("mivb_nl"),
+                rs.getString("transport_mode"), rs.getLong("other_quay"), rs.getString("other_source"),
+                rs.getString("other_fr"), rs.getString("other_nl"), rs.getInt("distance_m")),
+            (Object) quays.keySet().toArray(Long[]::new), (Object) quays.keySet().toArray(Long[]::new));
+        return new BrusselsNames(stopPlaces, pairs);
     }
 
     /** Voorstellen uit ndov V143 (#67). Geen paginering: ~750 rijen in ~0,2 s; de lijst filtert client-side. */

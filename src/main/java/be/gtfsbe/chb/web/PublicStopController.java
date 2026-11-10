@@ -1,5 +1,6 @@
 package be.gtfsbe.chb.web;
 
+import be.gtfsbe.chb.dto.BrusselsNames;
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.DuplicateQuay;
@@ -139,6 +140,11 @@ public class PublicStopController {
     @GetMapping("/api/review/group-candidates")
     public List<GroupCandidate> groupCandidates() {
         return repository.findGroupCandidates();
+    }
+
+    @GetMapping("/api/review/brussels-names")
+    public BrusselsNames brusselsNames() {
+        return repository.findBrusselsNames();
     }
 
     @GetMapping("/api/review/mode-mismatches")
