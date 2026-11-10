@@ -598,7 +598,10 @@ public class StopViewerRepository {
         "disagree", "n.disagree_langs IS NOT NULL",
         "region_mixed", "n.name_reason = 'region_mixed'",
         "general_region_unknown", "n.name_reason = 'general_region_unknown'",
-        "general_no_language", "n.name_reason = 'general_no_language'");
+        "general_no_language", "n.name_reason = 'general_no_language'",
+        // ndov V156: knoopnaam uit het hoofdmodus-kind (nakijken) / nog steeds geen naam in de gebiedstaal (blokkeert export).
+        "general_main_mode_child", "n.name_reason = 'general_main_mode_child'",
+        "general_no_region_language", "n.name_reason = 'general_no_region_language'");
 
     public static boolean isNameIssueReason(String reason) {
         return QUAY_NAME_REASONS.containsKey(reason) || STOP_NAME_REASONS.containsKey(reason);
@@ -620,8 +623,8 @@ public class StopViewerRepository {
         if (quayPredicate != null) {
             sql = """
                 SELECT q.id, true AS is_quay, q.name, %s, n.default_name, n.default_lang, n.name_reason, n.disagree_langs,
-                    f.feeds, m.value::jsonb->>'municipality' AS municipality
-                FROM (SELECT *, NULL::text[] AS disagree_langs FROM chb.quay_names) n
+                    n.main_mode_langs, f.feeds, m.value::jsonb->>'municipality' AS municipality
+                FROM (SELECT *, NULL::text[] AS disagree_langs, NULL::text[] AS main_mode_langs FROM chb.quay_names) n
                 JOIN chb.quay q ON q.id = n.quay_id
                 LEFT JOIN chb.quay_attribute m ON m.quay_id = q.id AND m.key = '_resolved_meta'
                 CROSS JOIN LATERAL (SELECT array_agg(DISTINCT rs.source_schema ORDER BY rs.source_schema) AS feeds
@@ -634,7 +637,7 @@ public class StopViewerRepository {
             // Geen OR met subselect op quay.stop_id (seq scan per StopPlace), zie de kaartquery.
             sql = """
                 SELECT s.id, false AS is_quay, s.name, %s, n.default_name, n.default_lang, n.name_reason, n.disagree_langs,
-                    f.feeds, f.municipality
+                    n.main_mode_langs, f.feeds, f.municipality
                 FROM chb.stop_names n
                 JOIN chb.stop s ON s.id = n.stop_id
                 CROSS JOIN LATERAL (
@@ -653,8 +656,8 @@ public class StopViewerRepository {
         return jdbcTemplate.query(sql,
             (rs, rowNum) -> new NameIssue(rs.getLong("id"), rs.getBoolean("is_quay"), rs.getString("name"),
                 rs.getString("names_text"), rs.getString("default_name"), rs.getString("default_lang"),
-                rs.getString("name_reason"), textArray(rs, "disagree_langs"), textArray(rs, "feeds"),
-                rs.getString("municipality")),
+                rs.getString("name_reason"), textArray(rs, "disagree_langs"), textArray(rs, "main_mode_langs"),
+                textArray(rs, "feeds"), rs.getString("municipality")),
             feed, feed, limit, offset);
     }
 

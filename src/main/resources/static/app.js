@@ -1769,7 +1769,7 @@ async function openDuplicateNamesDialog() {
 // database, hier wordt niets herberekend. Groepsredenen eerst, info-categorieën achteraan.
 
 const NAME_ISSUE_REASONS = ["disagree", "region_mixed", "general_region_unknown", "general_no_language",
-  "region_unknown", "no_region_language", "bare_code", "no_language", "bru_single", "dg_no_de"];
+  "general_no_region_language", "general_main_mode_child", "region_unknown", "no_region_language", "bare_code", "no_language", "bru_single", "dg_no_de"];
 
 async function openNameIssuesDialog() {
   showDialog(`
@@ -1818,6 +1818,7 @@ async function openNameIssuesDialog() {
       const sub = [row.names,
         t("nameIssues.default", { name: row.defaultName + (row.defaultLang ? " (" + row.defaultLang + ")" : "") }),
         row.disagreeLangs.length ? t("nameIssues.disagree", { langs: row.disagreeLangs.join(", ") }) : null,
+        row.mainModeLangs.length ? t("nameIssues.mainMode", { langs: row.mainModeLangs.join(", ") }) : null,
         row.reason].filter(Boolean).join(" · ");
       li.innerHTML = escapeHtml(head) +
         (row.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : "") +
