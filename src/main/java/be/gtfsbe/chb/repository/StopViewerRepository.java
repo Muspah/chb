@@ -125,6 +125,8 @@ public class StopViewerRepository {
                    FROM (SELECT s.id AS sid UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = s.id) x
                    JOIN chb.quay q ON q.stop_id = x.sid
                    WHERE q.merged_into_id IS NULL AND q.geom IS NOT NULL
+                     -- uitgeschakelde quays trekken geen punt in de vorm (#21), tenzij de hele StopPlace uit staat
+                     AND (q.disabled_at IS NULL OR s.disabled_at IS NOT NULL)
                ) END AS area_wkt
         FROM chb.stop s
         WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL AND s.merged_into_id IS NULL
