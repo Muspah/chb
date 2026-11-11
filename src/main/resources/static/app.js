@@ -13,6 +13,8 @@ const state = {
   map: null,
   mapReady: null, // Promise: kaartstijl en modus-iconen geladen, bronnen klaar voor setData
   movedMarker: null, // versleepbare marker tijdens "Locatie verplaatsen"
+  movingId: null, // id van de halte die verplaatst wordt (haar stip is dan verborgen)
+  moveEnded: null, // herstelt de knop als de verplaatsmodus eindigt
   selectedStopId: null,
   lastDetail: null, // laatst gerenderde StopDetail/-history, voor herrenderen bij taalwissel
   lastHistory: null,
@@ -454,6 +456,7 @@ function stopsAt(point) {
 }
 
 function onMapClick(e) {
+  if (state.movedMarker) return; // verplaatsmodus, zie clearMovedMarker
   const ids = stopsAt(e.point);
   if (ids.length === 0) {
     if (!document.getElementById("panel").hidden) closePanel();
@@ -502,7 +505,7 @@ function wireMapHover() {
   const tooltip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: "map-tooltip", offset: 10 });
   let shown = null;
   state.map.on("mousemove", (e) => {
-    const ids = stopsAt(e.point);
+    const ids = state.movedMarker ? [] : stopsAt(e.point); // geen tooltip in de verplaatsmodus
     state.map.getCanvas().style.cursor = ids.length ? "pointer" : "";
     const id = ids.length ? ids[0] : null;
     if (id === shown) {
@@ -724,6 +727,7 @@ function applyMapFilter() {
   const conditions = [];
   if (!state.showDisabled) conditions.push(["==", ["%", ["get", "f"], FLAG_DISABLED * 2], 0]);
   if (state.showOnlyUnreviewed && state.me.curator) conditions.push(["<", ["%", ["get", "f"], FLAG_REVIEWED * 2], FLAG_REVIEWED]);
+  if (state.movingId != null) conditions.push(["!=", ["get", "id"], state.movingId]);
   const filter = ["all", ...conditions];
   for (const layer of ["area-fill", "area-line", "stop-dot"]) state.map.setFilter(layer, filter);
   state.map.setFilter("stop-icon", ["all", ["has", "icon"], ...conditions]);
@@ -761,14 +765,24 @@ function panTo(id) {
 }
 
 // "Locatie verplaatsen": één versleepbare DOM-marker bovenop de stip, weg bij de volgende loadStops.
+// Verplaatsmodus: de stip van de halte zelf is verborgen (applyMapFilter), kaartklikken en tooltips staan uit
+// (onMapClick, wireMapHover): anders opende een klik op de marker het keuzelijstje van de haltes eronder.
 function clearMovedMarker() {
-  if (state.movedMarker) state.movedMarker.remove();
+  if (!state.movedMarker) return;
+  state.movedMarker.remove();
   state.movedMarker = null;
+  state.movingId = null;
+  applyMapFilter();
+  const onEnd = state.moveEnded;
+  state.moveEnded = null;
+  if (onEnd) onEnd();
 }
 
-function startMoveMarker(props, onStarted) {
+function startMoveMarker(props, onStarted, onEnded) {
   clearMovedMarker();
-  const marker = new maplibregl.Marker({ element: stopMarkerElement(props), draggable: true })
+  const element = stopMarkerElement(props);
+  element.classList.add("stop-marker-moving");
+  const marker = new maplibregl.Marker({ element, draggable: true })
     .setLngLat([props.lon, props.lat]).addTo(state.map);
   marker.on("dragend", async () => {
     const { lat, lng } = marker.getLngLat();
@@ -781,9 +795,16 @@ function startMoveMarker(props, onStarted) {
     await refreshAfterEdit(); // bij een fout staat de stip nog op de oude plek, bij succes op de nieuwe
   });
   state.movedMarker = marker;
+  state.movingId = props.id;
+  state.moveEnded = onEnded;
+  applyMapFilter();
   state.map.easeTo({ center: [props.lon, props.lat], zoom: Math.max(state.map.getZoom(), mapZoom(DETAIL_ZOOM)) });
   onStarted();
 }
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.movedMarker) clearMovedMarker();
+});
 
 // --- Zoeken ---------------------------------------------------------------
 
@@ -1168,11 +1189,19 @@ function wirePanelActions(detail) {
   const moveBtn = document.getElementById("move-location-btn");
   if (moveBtn) {
     moveBtn.addEventListener("click", () => {
+      if (state.movingId === detail.id) {
+        clearMovedMarker(); // tweede klik = annuleren, net als Esc
+        return;
+      }
       const props = state.stopsById.get(detail.id);
       if (!props || props.ring) return alert(t("panel.moveNoMarker"));
+      const label = moveBtn.textContent;
       startMoveMarker(props, () => {
-        moveBtn.disabled = true;
-        moveBtn.textContent = t("panel.moveActive");
+        moveBtn.textContent = t("panel.moveCancel");
+        moveBtn.classList.add("active");
+      }, () => {
+        moveBtn.textContent = label;
+        moveBtn.classList.remove("active");
       });
     });
   }

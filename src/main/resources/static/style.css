@@ -407,6 +407,21 @@ button, input, select {
   background: rgba(42, 120, 214, 0.12);
 }
 
+/* Versleepbare marker van "Locatie verplaatsen": groter, oranje ring, grijphand. */
+.stop-marker-moving {
+  cursor: grab;
+}
+
+.stop-marker-moving:active {
+  cursor: grabbing;
+}
+
+.stop-marker.stop-marker-moving span {
+  width: 26px;
+  height: 26px;
+  box-shadow: 0 0 0 3px var(--accent-500), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
 /* Enkel zichtbaar wanneer de "toon uitgeschakelde haltes"-toggle aanstaat (server filtert ze
    anders al helemaal weg) — halftransparant en grijs, duidelijk te onderscheiden van een actieve
    halte zonder de kleurcode van sync 1/2 te hergebruiken. */
