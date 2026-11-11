@@ -375,9 +375,10 @@ function initMap() {
     spiderfyOnMaxZoom: true,
   }).addTo(state.map);
   // Vlakken van gegroepeerde StopPlaces (onder de quay-stippen); aanklikbaar = de groep selecteren.
-  state.areaLayer = L.layerGroup();
-  syncAreaLayer();
-  state.map.on("zoomend", syncAreaLayer);
+  // Op de kaart staan enkel die in beeld (syncAreaLayer), state.areas houdt ze allemaal.
+  state.areaLayer = L.layerGroup().addTo(state.map);
+  state.areas = [];
+  state.map.on("moveend", syncAreaLayer);
   state.map.on("moveend", () => persistView(state.map));
   // Marker-klikken stoppen hun eigen propagatie (Leaflet's standaardgedrag voor interactieve
   // layers), dus dit vuurt enkel bij een klik op de kaart zelf, niet bij het selecteren van een
@@ -389,15 +390,17 @@ function initMap() {
   });
 }
 
-// Vlakken pas vanaf dit zoomniveau: daaronder zijn ze (8 m buffer) hooguit een pixel, en duizenden
-// SVG-paden maken pannen over het hele land traag.
+// Vlakken pas vanaf dit zoomniveau: daaronder zijn ze (8 m buffer) hooguit een pixel.
 const AREA_MIN_ZOOM = 14;
 
+// Enkel de vlakken in (of net naast) beeld: alle ~25K als SVG-paden maakten elke pan/zoom ~1 s trager
+// (gemeten 2026-11-11, canvas hielp nauwelijks). Doorlopen van alle bounds kost een paar ms.
 function syncAreaLayer() {
-  const show = state.map.getZoom() >= AREA_MIN_ZOOM;
-  if (show !== state.map.hasLayer(state.areaLayer)) {
-    if (show) state.areaLayer.addTo(state.map);
-    else state.areaLayer.remove();
+  state.areaLayer.clearLayers();
+  if (state.map.getZoom() < AREA_MIN_ZOOM) return;
+  const bounds = state.map.getBounds().pad(0.5);
+  for (const area of state.areas) {
+    if (bounds.intersects(area.getBounds())) state.areaLayer.addLayer(area);
   }
 }
 
@@ -458,7 +461,7 @@ async function loadStops() {
   if (mine !== loadStopsGeneration) return;
   state.stopsById.clear();
   state.markerLayer.clearLayers();
-  state.areaLayer.clearLayers();
+  state.areas = [];
   state.markersById.clear();
   const markers = [];
   for (const row of data.stops) {
@@ -472,7 +475,7 @@ async function loadStops() {
       );
       area.bindTooltip(escapeHtml(stopName(props))); // Leaflet zet een string als innerHTML
       area.on("click", () => onMarkerClick(props.id));
-      area.addTo(state.areaLayer);
+      state.areas.push(area);
       state.markersById.set(props.id, area);
       continue;
     }
@@ -502,6 +505,7 @@ async function loadStops() {
     state.markersById.set(props.id, marker);
   }
   state.markerLayer.addLayers(markers); // bulk toevoegen i.p.v. één voor één, veel sneller op 50K
+  syncAreaLayer();
 }
 
 function onMarkerClick(id) {
