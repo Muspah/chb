@@ -9,7 +9,7 @@
 const state = {
   me: { authenticated: false, name: null, email: null },
   stopPlaceTypes: [], // [{code, label}], zie loadStopPlaceTypes()
-  stopsById: new Map(), // id -> { name, stopType, publicCode, parentId, isSynthetic }
+  stopsById: new Map(), // id -> props uit decodeMapRow
   markersById: new Map(),
   map: null,
   markerLayer: null,
@@ -375,7 +375,9 @@ function initMap() {
     spiderfyOnMaxZoom: true,
   }).addTo(state.map);
   // Vlakken van gegroepeerde StopPlaces (onder de quay-stippen); aanklikbaar = de groep selecteren.
-  state.areaLayer = L.layerGroup().addTo(state.map);
+  state.areaLayer = L.layerGroup();
+  syncAreaLayer();
+  state.map.on("zoomend", syncAreaLayer);
   state.map.on("moveend", () => persistView(state.map));
   // Marker-klikken stoppen hun eigen propagatie (Leaflet's standaardgedrag voor interactieve
   // layers), dus dit vuurt enkel bij een klik op de kaart zelf, niet bij het selecteren van een
@@ -387,17 +389,26 @@ function initMap() {
   });
 }
 
-// De haltes worden nu per viewport opgehaald (zie loadStops), dus na pannen/zoomen moet er
-// opnieuw geladen worden. Apart van de persistView-listener in initMap zodat init() dit pas
-// aankoppelt ná de eerste expliciete loadStops()-aanroep — anders vuurt setView() bij het
-// aanmaken van de kaart zelf al een (overbodige) eerste moveend/reload vóór loadMe() klaar is.
-// Debounce omdat een sleepbeweging of muiswiel-zoom meerdere moveend's kort na elkaar geeft.
-function wireMapReloadOnMove() {
-  let reloadHandle = null;
-  state.map.on("moveend", () => {
-    clearTimeout(reloadHandle);
-    reloadHandle = setTimeout(loadStops, 200);
-  });
+// Vlakken pas vanaf dit zoomniveau: daaronder zijn ze (8 m buffer) hooguit een pixel, en duizenden
+// SVG-paden maken pannen over het hele land traag.
+const AREA_MIN_ZOOM = 14;
+
+function syncAreaLayer() {
+  const show = state.map.getZoom() >= AREA_MIN_ZOOM;
+  if (show !== state.map.hasLayer(state.areaLayer)) {
+    if (show) state.areaLayer.addTo(state.map);
+    else state.areaLayer.remove();
+  }
+}
+
+// Eén rij uit /api/stops (StopViewerRepository.findMapRows) -> de props die de rest van de kaart gebruikt.
+function decodeMapRow([id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, ring]) {
+  return {
+    id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, ring,
+    isQuay: kind === "q",
+    isWrapper: kind === "w",
+    isSynthetic: kind === "g",
+  };
 }
 
 // Categorische kleuren uit het gevalideerde standaardpalet (sloten 1 en 2, gegarandeerd
@@ -437,35 +448,26 @@ async function loadStops() {
   // valt gewoon terug op de volledige kaart.
   const useUnreviewed = state.showOnlyUnreviewed && state.me.curator;
   const path = useUnreviewed ? "/api/review/unreviewed-map" : "/api/stops";
-  // Enkel het huidige (licht opgevulde) viewport opvragen i.p.v. steeds de volledige ~50K-tabel
-  // (zie StopViewerRepository) — de padding voorkomt dat een kleine pan meteen een nieuwe
-  // bevraging vergt terwijl de rand nog net in beeld komt.
-  const bounds = state.map.getBounds().pad(0.2);
-  const params = new URLSearchParams({
-    minLon: bounds.getWest(),
-    minLat: bounds.getSouth(),
-    maxLon: bounds.getEast(),
-    maxLat: bounds.getNorth(),
-  });
+  // Altijd de volledige set (~50K, compact): de server cachet hem en de browser hervalideert met de
+  // ETag, dus zonder wijziging is dit een 304 zonder body. Pannen en zoomen vragen niets meer op.
   // Server filtert disabled_at IS NOT NULL-haltes standaard al weg (StopViewerRepository) — de
   // toggle vraagt gewoon de ongefilterde set op i.p.v. hier client-side te filteren.
-  if (state.showDisabled) params.set("showDisabled", "1");
+  const query = state.showDisabled ? "?showDisabled=1" : "";
   const mine = ++loadStopsGeneration;
-  const collection = await apiFetch(path + "?" + params);
+  const data = await apiFetch(path + query);
   if (mine !== loadStopsGeneration) return;
-  document.getElementById("map-hint").hidden = !collection.truncated;
   state.stopsById.clear();
   state.markerLayer.clearLayers();
   state.areaLayer.clearLayers();
   state.markersById.clear();
   const markers = [];
-  for (const feature of collection.features) {
-    const [lon, lat] = feature.geometry.coordinates;
-    const props = feature.properties;
+  for (const row of data.stops) {
+    const props = decodeMapRow(row);
+    const { lat, lon } = props;
     state.stopsById.set(props.id, props);
-    if (feature.geometry.type === "Polygon") {
+    if (props.ring) {
       const area = L.polygon(
-        feature.geometry.coordinates[0].map(([x, y]) => [y, x]),
+        props.ring.map(([x, y]) => [y, x]),
         { color: "#eb6834", weight: 2, fillOpacity: 0.15, bubblingMouseEvents: false },
       );
       area.bindTooltip(escapeHtml(stopName(props))); // Leaflet zet een string als innerHTML
@@ -520,9 +522,8 @@ function onMarkerClick(id) {
   selectStop(id);
 }
 
-// Geeft terug of er een lokale marker was om naartoe te pannen — sinds haltes per viewport
-// geladen worden (zie loadStops) staat een niet-zichtbare halte (bv. via zoeken, of een kind in
-// het detailpaneel buiten beeld) hier niet meer per se in, zie de fallback in selectStop.
+// Geeft terug of er een lokale marker was om naartoe te pannen. Niet elke halte heeft er een (bv. een
+// kind van een parent met coördinaten, of een uitgeschakelde zonder toggle), zie de fallback in selectStop.
 function panTo(id) {
   const marker = state.markersById.get(id);
   if (marker && marker.getBounds) { // vlak van een groep: er is geen marker om uit een cluster te halen
@@ -605,9 +606,8 @@ async function selectStop(id) {
     : Promise.resolve(null);
   const detail = await apiFetch("/api/stops/" + id);
   if (!wasVisible && detail.lat != null && detail.lon != null) {
-    // Geen lokale marker om naartoe te zoomen (halte lag buiten het huidige viewport) — pan
-    // rechtstreeks op de net opgehaalde coördinaten; de moveend-listener (wireMapReloadOnMove)
-    // laadt vanzelf de haltes voor de nieuwe positie.
+    // Geen lokale marker om naartoe te zoomen (niet op de kaart, zie panTo) — pan rechtstreeks
+    // op de net opgehaalde coördinaten.
     state.map.setView([detail.lat, detail.lon], Math.max(state.map.getZoom(), DETAIL_ZOOM));
   }
   const history = await historyPromise;
@@ -1255,9 +1255,8 @@ function updateGroupStatus() {
 
 // after: terug naar het voorstellenoverzicht, met grouped = of er gegroepeerd is.
 async function openGroupDialog(picked, after = null) {
-  // Niet via state.stopsById lezen: dat komt enkel uit de kaart-GeoJSON van het huidige
-  // viewport (zie loadStops), maar een halte kan ook via zoeken gekozen zijn terwijl ze buiten
-  // beeld ligt. Rechtstreeks ophalen dekt beide gevallen en levert meteen ook de bronnen.
+  // Niet via state.stopsById lezen: daar staat enkel wat op de kaart staat, maar een halte kan ook
+  // via zoeken gekozen zijn. Rechtstreeks ophalen dekt beide gevallen en levert meteen ook de bronnen.
   const details = await Promise.all(picked.map((id) => apiFetch("/api/stops/" + id)));
   const defaultName = details[0]?.displayName || "";
   // Alleen wrappers (losse haltes zonder eigen StopPlace) -> hun quays worden één nieuwe StopPlace (de
@@ -2290,7 +2289,6 @@ async function init() {
   applyUnreviewedToggleUi();
   applyDisabledToggleUi();
   await loadStops();
-  wireMapReloadOnMove();
 }
 
 document.addEventListener("DOMContentLoaded", init);

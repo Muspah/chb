@@ -7,8 +7,6 @@ import be.gtfsbe.chb.dto.DuplicateQuay;
 import be.gtfsbe.chb.dto.ModeMismatch;
 import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
-import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
-import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.ReviewStats;
 import be.gtfsbe.chb.dto.StopDetail;
 import be.gtfsbe.chb.dto.StopHistoryEntry;
@@ -16,7 +14,11 @@ import be.gtfsbe.chb.dto.StopPlaceTypeOption;
 import be.gtfsbe.chb.dto.StopSearchResult;
 import be.gtfsbe.chb.dto.TecCityIssue;
 import be.gtfsbe.chb.dto.UnreviewedStop;
+import be.gtfsbe.chb.repository.StopMapCache;
 import be.gtfsbe.chb.repository.StopViewerRepository;
+import org.springframework.http.CacheControl;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -38,9 +40,11 @@ import java.util.Locale;
 public class PublicStopController {
 
     private final StopViewerRepository repository;
+    private final StopMapCache mapCache;
 
-    public PublicStopController(StopViewerRepository repository) {
+    public PublicStopController(StopViewerRepository repository, StopMapCache mapCache) {
         this.repository = repository;
+        this.mapCache = mapCache;
     }
 
     /** Voor externe monitoring: 200 als de app draait en de database antwoordt, anders een fout. */
@@ -50,12 +54,11 @@ public class PublicStopController {
         return "ok";
     }
 
+    /** Alle kaartpunten in één keer, compact (zie {@link StopViewerRepository#findMapRows}). */
     @GetMapping("/api/stops")
-    public GeoJsonFeatureCollection stops(@RequestParam double minLon, @RequestParam double minLat,
-                                           @RequestParam double maxLon, @RequestParam double maxLat,
-                                           @RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled,
-                                           Locale locale) {
-        return repository.findAllAsMapFeatures(mapBounds(minLon, minLat, maxLon, maxLat), showDisabled, locale.getLanguage());
+    public ResponseEntity<byte[]> stops(@RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled,
+                                        Locale locale) {
+        return mapResponse(mapCache.get(false, showDisabled, locale.getLanguage()));
     }
 
     @GetMapping("/api/stops/{id}")
@@ -92,11 +95,9 @@ public class PublicStopController {
     }
 
     @GetMapping("/api/review/unreviewed-map")
-    public GeoJsonFeatureCollection unreviewedMap(@RequestParam double minLon, @RequestParam double minLat,
-                                                   @RequestParam double maxLon, @RequestParam double maxLat,
-                                                   @RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled,
-                                                   Locale locale) {
-        return repository.findUnreviewedAsMapFeatures(mapBounds(minLon, minLat, maxLon, maxLat), showDisabled, locale.getLanguage());
+    public ResponseEntity<byte[]> unreviewedMap(@RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled,
+                                                Locale locale) {
+        return mapResponse(mapCache.get(true, showDisabled, locale.getLanguage()));
     }
 
     @GetMapping("/api/review/unreviewed")
@@ -162,10 +163,10 @@ public class PublicStopController {
         return repository.findFeeds();
     }
 
-    private static MapBounds mapBounds(double minLon, double minLat, double maxLon, double maxLat) {
-        if (minLon >= maxLon || minLat >= maxLat) {
-            throw new InvalidRequestException("Ongeldig kaartviewport: minLon/minLat moeten kleiner zijn dan maxLon/maxLat");
-        }
-        return new MapBounds(minLon, minLat, maxLon, maxLat);
+    // no-cache + ETag: de browser bewaart de set en vraagt telkens of hij nog klopt (304 zonder body).
+    // Expliciet gezet, anders zet Spring Security no-store en is er niets om te hervalideren.
+    private static ResponseEntity<byte[]> mapResponse(StopMapCache.Snapshot snapshot) {
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noCache())
+            .eTag(snapshot.etag()).body(snapshot.json());
     }
 }

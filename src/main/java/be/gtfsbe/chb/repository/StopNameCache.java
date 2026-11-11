@@ -15,6 +15,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -50,6 +51,8 @@ public class StopNameCache {
     private final AtomicBoolean pending = new AtomicBoolean();
     private volatile Map<Long, Names> stops = Map.of();
     private volatile Map<Long, Names> quays = Map.of();
+    // Telt elke wijziging van de namen; StopMapCache bouwt de kaart opnieuw op als hij verspringt.
+    private final AtomicLong version = new AtomicLong();
 
     public StopNameCache(JdbcTemplate viewerJdbcTemplate) {
         this.jdbcTemplate = viewerJdbcTemplate;
@@ -78,6 +81,11 @@ public class StopNameCache {
         } else if (quays.containsKey(id)) {
             quays = withName(quays, id, lang, value);
         }
+        version.incrementAndGet();
+    }
+
+    public long version() {
+        return version.get();
     }
 
     // ponytail: kopie van de hele map (~70K items, enkele ms) per curatornaam; volstaat bij menselijk tempo.
@@ -97,6 +105,7 @@ public class StopNameCache {
             long start = System.nanoTime();
             quays = load("quay_id", "chb.quay_names", "NULL::text[]");
             stops = load("stop_id", "chb.stop_names", "disagree_langs");
+            version.incrementAndGet();
             log.info("Namencache ververst: {} StopPlaces, {} quays in {} ms", stops.size(), quays.size(),
                 (System.nanoTime() - start) / 1_000_000);
         } catch (RuntimeException e) {

@@ -3,11 +3,7 @@ package be.gtfsbe.chb.repository;
 import be.gtfsbe.chb.dto.BrusselsNames;
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.DuplicateQuay;
-import be.gtfsbe.chb.dto.GeoJsonFeature;
-import be.gtfsbe.chb.dto.GeoJsonFeatureCollection;
-import be.gtfsbe.chb.dto.GeoJsonGeometry;
 import be.gtfsbe.chb.dto.GroupCandidate;
-import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.ModeMismatch;
 import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
@@ -100,26 +96,17 @@ public class StopViewerRepository {
             (rs, rowNum) -> new StopPlaceTypeOption(rs.getString("code"), rs.getString("label_nl")));
     }
 
-    // Bovengrens op het aantal features per kaartaanvraag: bij een ver uitgezoomd viewport (bv.
-    // heel Vlaanderen) bevat de bbox alsnog een groot deel van de ~50K haltes. In plaats van die
-    // allemaal te versturen (net het probleem dat dit vervangt) knippen we af en laat de frontend
-    // een "zoom in voor meer detail"-melding zien (GeoJsonFeatureCollection.truncated()).
-    private static final int MAP_FEATURES_LIMIT = 2000;
-
     // Een halte met coördinaten wordt van de kaart geweerd zodra haar eigen (directe) parent ook
     // coördinaten heeft — dat betekent dat die parent haar al visueel vertegenwoordigt als één
     // punt (bv. een "snel groeperen"-groeperingsknoop over twee haltes aan weerszijden van
     // dezelfde straat). Pas bij doorklikken op die parent worden de onderliggende haltes zichtbaar
     // (zie findChildren). Een parent zonder eigen coördinaten (bv. een groot stationscomplex)
     // verandert niets aan het bestaande gedrag: de kinderen blijven dan elk apart zichtbaar, want
-    // er is geen enkel punt dat ze kan vertegenwoordigen. Gedeeld door findAllAsMapFeatures en
-    // findUnreviewedAsMapFeatures, die enkel verschillen in een extra filter erbovenop.
+    // er is geen enkel punt dat ze kan vertegenwoordigen.
     //
-    // s.geom && ST_MakeEnvelope(...) filtert op het huidige kaartviewport via de GiST-index op
-    // chb.stop.geom (db/add_stop_geom_postgis.sql) — zonder deze bbox-filter (en zonder cap
-    // hieronder) laadt de kaart bij elke actie de volledige tabel, wat >1s duurde.
+    // Geen viewport-filter: de kaart haalt de volledige set één keer op, gecachet in StopMapCache (>1 s per opbouw).
     private static final String MAP_FEATURES_BASE_SQL = """
-        SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at, s.transport_mode,
+        SELECT s.id, s.name, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at, s.transport_mode,
                CASE WHEN NOT s.is_wrapper THEN (
                    SELECT ST_AsText(ST_Buffer(ST_ConvexHull(ST_Collect(q.geom))::geography, 8)::geometry, 6)
                    FROM (SELECT s.id AS sid UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = s.id) x
@@ -130,7 +117,6 @@ public class StopViewerRepository {
                ) END AS area_wkt
         FROM chb.stop s
         WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL AND s.merged_into_id IS NULL
-        AND s.geom && ST_MakeEnvelope(?, ?, ?, ?, 4326)
         AND NOT EXISTS (
             SELECT 1 FROM chb.stop p
             WHERE p.id = s.parent_id AND p.lat IS NOT NULL AND p.lon IS NOT NULL
@@ -147,102 +133,76 @@ public class StopViewerRepository {
         return showDisabled ? "" : "AND s.disabled_at IS NULL\n";
     }
 
-    public GeoJsonFeatureCollection findAllAsMapFeatures(MapBounds bounds, boolean showDisabled, String lang) {
+    /**
+     * Alle kaartpunten als compacte rijen (geen GeoJSON: ~50K features, de sleutels per feature waren het
+     * grootste deel van de payload). Kolommen, zie {@code decodeMapRow} in app.js:
+     * {@code [id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, ring?]}, met kind
+     * {@code q} quay, {@code w} wrapper, {@code g} curated groep (synthetisch), {@code p} andere StopPlace.
+     * Een {@code ring} ({@code [[lon,lat],...]}) maakt er een vlak van; de quays van dat vlak volgen als eigen rijen.
+     * {@code unreviewed}: de "doorlichtingskaart", enkel nog niet nagekeken haltes.
+     */
+    public List<Object[]> findMapRows(boolean unreviewed, boolean showDisabled, String lang) {
         String sql = MAP_FEATURES_BASE_SQL + disabledFilterSql(showDisabled);
-        return queryMapFeatures(sql, bounds, showDisabled, lang, DELETED_ATTRIBUTE_KEY);
-    }
-
-    /** Voor de "doorlichtingskaart" (build-instruction.md-uitbreiding): enkel nog niet nagekeken haltes. */
-    public GeoJsonFeatureCollection findUnreviewedAsMapFeatures(MapBounds bounds, boolean showDisabled, String lang) {
-        String sql = MAP_FEATURES_BASE_SQL + disabledFilterSql(showDisabled) + """
-            AND NOT EXISTS (
-                SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?
-            )
-            """;
-        return queryMapFeatures(sql, bounds, showDisabled, lang, DELETED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY);
-    }
-
-    // Vraagt telkens één rij méér op dan de cap: als die erbij zit, weten we dat afgekapt is,
-    // zonder een aparte COUNT(*)-query (die op een groot uitgezoomd viewport zelf ook traag zou
-    // zijn — precies wat we vermijden).
-    private GeoJsonFeatureCollection queryMapFeatures(String baseSql, MapBounds bounds, boolean showDisabled, String lang,
-                                                      Object... extraParams) {
-        String sql = baseSql + "LIMIT ?"; // geen ORDER BY: boven de limiet gooien we toch alles weg
-        Object[] params = new Object[4 + extraParams.length + 1];
-        params[0] = bounds.minLon();
-        params[1] = bounds.minLat();
-        params[2] = bounds.maxLon();
-        params[3] = bounds.maxLat();
-        System.arraycopy(extraParams, 0, params, 4, extraParams.length);
-        params[params.length - 1] = MAP_FEATURES_LIMIT + 1;
-        List<GeoJsonFeature> rows = jdbcTemplate.query(sql, (rs, rowNum) -> mapFeatureRow(rs, lang), params);
-        boolean truncated = rows.size() > MAP_FEATURES_LIMIT;
-        // Te veel in beeld: bewust niets tonen (geen willekeurig deel), de gebruiker zoomt in.
-        if (truncated) return new GeoJsonFeatureCollection(List.of(), true);
-        List<GeoJsonFeature> features = new ArrayList<>(rows);
-        features.addAll(quayDotsFor(features, showDisabled, lang));
-        return new GeoJsonFeatureCollection(features, truncated);
+        Object[] params = {DELETED_ATTRIBUTE_KEY};
+        if (unreviewed) {
+            sql += "AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)\n";
+            params = new Object[] {DELETED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY};
+        }
+        List<Object[]> rows = new ArrayList<>(jdbcTemplate.query(sql, (rs, rowNum) -> mapRow(rs, lang), params));
+        rows.addAll(quayRowsFor(rows, showDisabled, lang));
+        return rows;
     }
 
     // Geen OR/IN-subselect op q.stop_id: dat gaf per StopPlace een seq scan over alle quays (5,7 s op 466
     // stops, gemeten 2026-10-13); de UNION-ALL-join gebruikt ix_quay_stop (45 ms).
     // Een groep (StopPlace met vlak) heeft geen eigen stip meer: haar quays zijn de stippen, het
     // vlak toont dat ze bij elkaar horen. Quays van een general: die van zijn monomodals (één niveau).
-    private List<GeoJsonFeature> quayDotsFor(List<GeoJsonFeature> stops, boolean showDisabled, String lang) {
-        String ids = stops.stream().filter(f -> "Polygon".equals(f.geometry().type()))
-                .map(f -> String.valueOf(f.properties().get("id"))).collect(Collectors.joining(",", "{", "}"));
+    private List<Object[]> quayRowsFor(List<Object[]> stops, boolean showDisabled, String lang) {
+        String ids = stops.stream().filter(r -> r.length > 9)
+                .map(r -> String.valueOf(r[0])).collect(Collectors.joining(",", "{", "}"));
         if (ids.equals("{}")) return List.of();
         return jdbcTemplate.query("""
-            SELECT q.id, q.name, q.public_code, q.lat, q.lon, q.stop_id, q.is_synthetic, q.disabled_at, q.transport_mode
+            SELECT q.id, q.name, q.public_code, q.lat, q.lon, q.stop_id, q.disabled_at, q.transport_mode
             FROM (SELECT unnest(?::bigint[]) AS sid
                   UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = ANY(?::bigint[])) x
             JOIN chb.quay q ON q.stop_id = x.sid
             WHERE q.merged_into_id IS NULL AND q.lat IS NOT NULL AND q.lon IS NOT NULL
-            """ + (showDisabled ? "" : "AND q.disabled_at IS NULL\n"), (rs, n) -> {
-            Map<String, Object> p = new LinkedHashMap<>();
-            p.put("id", rs.getLong("id"));
-            p.put("name", names.display(rs.getLong("id"), lang, rs.getString("name")));
-            p.put("publicCode", rs.getString("public_code"));
-            p.put("parentId", rs.getLong("stop_id"));
-            p.put("isSynthetic", rs.getBoolean("is_synthetic"));
-            p.put("isWrapper", false);
-            p.put("isQuay", true);
-            p.put("transportMode", rs.getString("transport_mode"));
-            p.put("disabledAt", rs.getObject("disabled_at", OffsetDateTime.class));
-            return new GeoJsonFeature(GeoJsonGeometry.point(rs.getDouble("lon"), rs.getDouble("lat")), p);
-        }, ids, ids);
+            """ + (showDisabled ? "" : "AND q.disabled_at IS NULL\n"), (rs, n) -> new Object[] {
+                rs.getLong("id"), round6(rs.getDouble("lon")), round6(rs.getDouble("lat")),
+                names.display(rs.getLong("id"), lang, rs.getString("name")), rs.getString("public_code"),
+                rs.getLong("stop_id"), rs.getString("transport_mode"), rs.getObject("disabled_at", OffsetDateTime.class), "q"},
+            ids, ids);
+    }
+
+    // ~10 cm: meer decimalen zijn ruis en kosten enkel payload.
+    private static double round6(double v) {
+        return Math.round(v * 1e6) / 1e6;
     }
 
     // "POLYGON((x y,x y,...))" -> één buitenring; de buffer levert nooit gaten.
-    private static double[][][] polygonFromWkt(String wkt) {
+    private static double[][] ringFromWkt(String wkt) {
         String[] pts = wkt.substring(wkt.indexOf("((") + 2, wkt.lastIndexOf("))")).split(",");
         double[][] ring = new double[pts.length][];
         for (int i = 0; i < pts.length; i++) {
             String[] xy = pts[i].trim().split(" ");
             ring[i] = new double[] {Double.parseDouble(xy[0]), Double.parseDouble(xy[1])};
         }
-        return new double[][][] {ring};
+        return ring;
     }
 
     // De kaart toont alleen: "name" is hier de weergavenaam (UI-taal/default), niet de kale naam.
-    private GeoJsonFeature mapFeatureRow(ResultSet rs, String lang) throws SQLException {
-        Map<String, Object> properties = new LinkedHashMap<>();
-        properties.put("id", rs.getLong("id"));
-        properties.put("name", names.display(rs.getLong("id"), lang, rs.getString("name")));
-        properties.put("stopType", rs.getString("stop_type"));
-        properties.put("publicCode", rs.getString("public_code"));
+    private Object[] mapRow(ResultSet rs, String lang) throws SQLException {
         long parentId = rs.getLong("parent_id");
-        properties.put("parentId", rs.wasNull() ? null : parentId);
-        properties.put("isSynthetic", rs.getBoolean("is_synthetic"));
-        properties.put("isWrapper", rs.getBoolean("is_wrapper"));
-        properties.put("transportMode", rs.getString("transport_mode"));
-        properties.put("disabledAt", rs.getObject("disabled_at", OffsetDateTime.class));
+        Long parent = rs.wasNull() ? null : parentId;
+        String kind = rs.getBoolean("is_wrapper") ? "w" : rs.getBoolean("is_synthetic") ? "g" : "p";
+        Object[] row = {rs.getLong("id"), round6(rs.getDouble("lon")), round6(rs.getDouble("lat")),
+            names.display(rs.getLong("id"), lang, rs.getString("name")), rs.getString("public_code"), parent,
+            rs.getString("transport_mode"), rs.getObject("disabled_at", OffsetDateTime.class), kind};
         String areaWkt = rs.getString("area_wkt");
-        if (areaWkt != null && areaWkt.startsWith("POLYGON")) {
-            properties.put("isArea", true);
-            return new GeoJsonFeature(GeoJsonGeometry.polygon(polygonFromWkt(areaWkt)), properties);
-        }
-        return new GeoJsonFeature(GeoJsonGeometry.point(rs.getDouble("lon"), rs.getDouble("lat")), properties);
+        if (areaWkt == null || !areaWkt.startsWith("POLYGON")) return row;
+        Object[] area = Arrays.copyOf(row, 10);
+        area[9] = ringFromWkt(areaWkt);
+        return area;
     }
 
     /**

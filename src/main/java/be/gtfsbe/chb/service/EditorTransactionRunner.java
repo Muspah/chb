@@ -1,5 +1,6 @@
 package be.gtfsbe.chb.service;
 
+import be.gtfsbe.chb.repository.StopMapCache;
 import be.gtfsbe.chb.repository.StopNameCache;
 import be.gtfsbe.chb.web.CuratorActionException;
 import org.postgresql.util.PSQLException;
@@ -40,13 +41,15 @@ public class EditorTransactionRunner {
     private final TransactionTemplate transactionTemplate;
     private final RejectionCounter rejections;
     private final StopNameCache names;
+    private final StopMapCache mapCache;
 
     public EditorTransactionRunner(JdbcTemplate editorJdbcTemplate, PlatformTransactionManager editorTransactionManager,
-                                   RejectionCounter rejections, StopNameCache names) {
+                                   RejectionCounter rejections, StopNameCache names, StopMapCache mapCache) {
         this.editorJdbcTemplate = editorJdbcTemplate;
         this.transactionTemplate = new TransactionTemplate(editorTransactionManager);
         this.rejections = rejections;
         this.names = names;
+        this.mapCache = mapCache;
     }
 
     public <T> T runAs(String currentUser, Function<JdbcTemplate, T> action) {
@@ -57,6 +60,7 @@ public class EditorTransactionRunner {
             });
             // Elke schrijfactie kan een naam raken (name_<taal>, naam, groeperen, samenvoegen).
             names.refreshSoon();
+            mapCache.invalidate();
             return result;
         } catch (DataAccessException e) {
             CuratorActionException translated = translate(e);

@@ -107,7 +107,6 @@ const translations = {
     "auth.signOutFailed": "Sign out failed. Reload the page and try again.",
     "auth.signedIn": "Signed in",
 
-    "map.hint": "Too many stops in this view — zoom in for more detail.",
     "map.attribution": "&copy; OpenStreetMap contributors",
     "map.stopFallbackName": "Stop {id}",
     "map.disabledSince": "disabled since {date}",
@@ -352,7 +351,6 @@ const translations = {
     "auth.signOutFailed": "Uitloggen is mislukt. Herlaad de pagina en probeer opnieuw.",
     "auth.signedIn": "Ingelogd",
 
-    "map.hint": "Te veel haltes in deze weergave — zoom in voor meer detail.",
     "map.attribution": "&copy; OpenStreetMap-auteurs",
     "map.stopFallbackName": "Halte {id}",
     "map.disabledSince": "uitgeschakeld sinds {date}",
@@ -597,7 +595,6 @@ const translations = {
     "auth.signOutFailed": "Abmelden fehlgeschlagen. Laden Sie die Seite neu und versuchen Sie es erneut.",
     "auth.signedIn": "Angemeldet",
 
-    "map.hint": "Zu viele Haltestellen in dieser Ansicht — zoomen Sie hinein für mehr Details.",
     "map.attribution": "&copy; OpenStreetMap-Mitwirkende",
     "map.stopFallbackName": "Haltestelle {id}",
     "map.disabledSince": "deaktiviert seit {date}",
@@ -842,7 +839,6 @@ const translations = {
     "auth.signOutFailed": "La déconnexion a échoué. Rechargez la page et réessayez.",
     "auth.signedIn": "Connecté",
 
-    "map.hint": "Trop d'arrêts dans cette vue — zoomez pour plus de détails.",
     "map.attribution": "&copy; contributeurs d'OpenStreetMap",
     "map.stopFallbackName": "Arrêt {id}",
     "map.disabledSince": "désactivé depuis le {date}",

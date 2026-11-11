@@ -293,39 +293,6 @@ button, input, select {
   height: 100%;
 }
 
-#map-hint {
-  position: fixed;
-  top: 4.75rem;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 900;
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  background: var(--brand-900);
-  color: white;
-  padding: 0.5rem 1rem;
-  border-radius: 999px;
-  font-size: 0.85rem;
-  font-weight: 500;
-  box-shadow: var(--shadow-md);
-}
-
-#map-hint svg {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  fill: none;
-  stroke: var(--accent-500);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-#map-hint[hidden] {
-  display: none;
-}
-
 #error-toast {
   position: fixed;
   bottom: 1.5rem;
