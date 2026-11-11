@@ -371,6 +371,11 @@ const DISABLED_COLOR = "#8a94a3";
 // Modus-iconen vanaf dit (MapLibre-)zoomniveau, daaronder enkel gekleurde stippen.
 const ICON_MIN_ZOOM = mapZoom(14);
 const EMPTY = { type: "FeatureCollection", features: [] };
+// Klein op landsniveau, op detailniveau zo groot als de vroegere 18px-markers.
+const DOT_RADIUS = ["interpolate", ["linear"], ["zoom"], 6, 1.5, 10, 2.5, ICON_MIN_ZOOM - 1, 5, ICON_MIN_ZOOM, 9];
+// "Enkel nog te bekijken": weinig stippen die je uitgezoomd moet terugvinden, dus groter op lage zoom.
+const DOT_STROKE = ["interpolate", ["linear"], ["zoom"], 9, 0, 12, 1.5];
+const TODO_DOT_RADIUS = ["interpolate", ["linear"], ["zoom"], 6, 4, 10, 5, ICON_MIN_ZOOM - 1, 6, ICON_MIN_ZOOM, 9];
 
 function mapZoom(urlZoom) {
   return urlZoom - 1;
@@ -413,13 +418,12 @@ function initMap() {
           type: "circle",
           source: "stops",
           paint: {
-            // Klein op landsniveau, op detailniveau zo groot als de vroegere 18px-markers.
-            "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 1.5, 10, 2.5, ICON_MIN_ZOOM - 1, 5, ICON_MIN_ZOOM, 9],
+            "circle-radius": DOT_RADIUS,
             "circle-color": ["match", ["get", "k"], "g", GROUP_COLOR, "d", DISABLED_COLOR, STOP_COLOR],
             "circle-opacity": ["match", ["get", "k"], "d", 0.55, 1],
             // Witte rand: de stip blijft opvallen op elke ondergrond (beige land, groen park, blauw water).
             "circle-stroke-color": "#ffffff",
-            "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 9, 0, 12, 1.5],
+            "circle-stroke-width": DOT_STROKE,
           },
         },
         {
@@ -736,7 +740,10 @@ function applyMapFilter() {
   if (!state.map.getLayer("stop-dot")) return; // stijl nog niet geladen: loadStops past de filter toe
   const conditions = [];
   if (!state.showDisabled) conditions.push(["==", ["%", ["get", "f"], FLAG_DISABLED * 2], 0]);
-  if (state.showOnlyUnreviewed && state.me.curator) conditions.push(["<", ["%", ["get", "f"], FLAG_REVIEWED * 2], FLAG_REVIEWED]);
+  const todoOnly = state.showOnlyUnreviewed && state.me.curator;
+  if (todoOnly) conditions.push(["<", ["%", ["get", "f"], FLAG_REVIEWED * 2], FLAG_REVIEWED]);
+  state.map.setPaintProperty("stop-dot", "circle-radius", todoOnly ? TODO_DOT_RADIUS : DOT_RADIUS);
+  state.map.setPaintProperty("stop-dot", "circle-stroke-width", todoOnly ? 1.5 : DOT_STROKE);
   if (state.movingId != null) conditions.push(["!=", ["get", "id"], state.movingId]);
   const filter = ["all", ...conditions];
   for (const layer of ["area-fill", "area-line", "stop-dot"]) state.map.setFilter(layer, filter);
