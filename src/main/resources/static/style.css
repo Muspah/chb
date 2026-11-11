@@ -293,6 +293,26 @@ button, input, select {
   height: 100%;
 }
 
+#build-info {
+  position: absolute;
+  left: 4px;
+  bottom: 2px;
+  z-index: 2;
+  font-size: 10px;
+  color: var(--ink-500);
+  text-decoration: none;
+  opacity: 0.6;
+}
+
+#build-info:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+#build-info[hidden] {
+  display: none;
+}
+
 #map-loading {
   position: fixed;
   top: 4.75rem;

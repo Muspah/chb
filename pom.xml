@@ -33,6 +33,9 @@
              each. -->
         <closure-compiler.version>v20260817</closure-compiler.version>
         <yuicompressor.version>2.4.8</yuicompressor.version>
+        <!-- Overschreven door de GitHub-build (-Dgit.sha=... -Dgh.run=...); zichtbaar linksonder op de kaart. -->
+        <git.sha>dev</git.sha>
+        <gh.run>local</gh.run>
     </properties>
 
     <dependencies>
@@ -79,6 +82,19 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build-info</goal>
+                        </goals>
+                        <configuration>
+                            <additionalProperties>
+                                <commit>${git.sha}</commit>
+                                <run>${gh.run}</run>
+                            </additionalProperties>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
             <!-- Fetches the YUI Compressor and Closure Compiler CLI jars so exec-maven-plugin

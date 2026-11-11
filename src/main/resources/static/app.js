@@ -139,8 +139,18 @@ async function guarded(action) {
 async function loadMe() {
   state.me = await apiFetch("/api/me");
   renderAuthArea();
+  renderBuildInfo();
   document.getElementById("toolbar").hidden = !state.me.curator;
   if (state.me.curator) refreshReviewCounts();
+}
+
+// Gedeployde build, subtiel linksonder op de kaart; linkt naar de GitHub Actions-run.
+function renderBuildInfo() {
+  const el = document.getElementById("build-info");
+  if (!state.me.commit) return;
+  el.textContent = `${state.me.commit} · build ${state.me.run}`;
+  if (/^\d+$/.test(state.me.run)) el.href = `https://github.com/Muspah/chb/actions/runs/${state.me.run}`;
+  el.hidden = false;
 }
 
 // --- StopPlaceType (NeTEx StopTypeEnumeration, chb.stop_place_type) -----
