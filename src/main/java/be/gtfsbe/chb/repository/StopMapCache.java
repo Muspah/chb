@@ -48,9 +48,16 @@ public class StopMapCache {
         this.jsonMapper = jsonMapper;
     }
 
-    /** Na elke curator-schrijfactie (EditorTransactionRunner), ná de commit. */
+    /**
+     * Na elke curator-schrijfactie (EditorTransactionRunner), ná de commit. De talen die al in de cache zaten,
+     * meteen op de achtergrond opnieuw opbouwen: de kaart ververst eerst enkel de omgeving van de actie
+     * (/api/stops/bbox) en haalt de volledige set pas later op, die ligt dan klaar.
+     */
     public void invalidate() {
         edits.incrementAndGet();
+        for (String key : entries.keySet()) {
+            background.execute(() -> build(key));
+        }
     }
 
     public Snapshot get(String lang) {

@@ -525,9 +525,12 @@ function wireMapHover() {
 }
 
 // Eén rij uit /api/stops (StopViewerRepository.findMapRows) -> de props die de rest van de kaart gebruikt.
-function decodeMapRow([id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, flags, ring]) {
+// extra: bij een vlak de ring, bij een quay van een vlak het id van dat vlak (root).
+function decodeMapRow([id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, flags, extra]) {
   return {
-    id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, flags, ring,
+    id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, flags,
+    ring: kind === "q" ? undefined : extra,
+    root: kind === "q" ? extra : undefined,
     isQuay: kind === "q",
     isWrapper: kind === "w",
     isSynthetic: kind === "g",
@@ -566,16 +569,12 @@ let loadStopsGeneration = 0;
 const FLAG_DISABLED = 1;
 const FLAG_REVIEWED = 2;
 
-async function loadStops() {
+async function loadStops({ quiet = false } = {}) {
   // Altijd de volledige set (~92K, compact) met vlaggen: de server cachet hem en de browser hervalideert
   // met de ETag, dus zonder wijziging is dit een 304 zonder body. "Enkel nog te bekijken" en "toon
   // uitgeschakelde" filtert de kaart zelf (applyMapFilter): wisselen vraagt niets op.
   const mine = ++loadStopsGeneration;
-  const loading = document.getElementById("map-loading");
-  const doneLoading = () => {
-    if (mine === loadStopsGeneration) loading.hidden = true;
-  };
-  loading.hidden = false;
+  const doneLoading = showMapLoading(mine, quiet);
   let data;
   try {
     [data] = await Promise.all([apiFetch("/api/stops"), state.mapReady]);
@@ -584,13 +583,84 @@ async function loadStops() {
     throw e;
   }
   if (mine !== loadStopsGeneration) return;
-  clearMovedMarker();
   state.stopsById.clear();
-  const points = [];
-  const areas = [];
   for (const row of data.stops) {
     const props = decodeMapRow(row);
     state.stopsById.set(props.id, props);
+  }
+  renderStops().then(doneLoading);
+}
+
+// Kaders groter dan dit (graden) ververst de server niet apart (MAX_BBOX_DEGREES), dan toch alles.
+const MAX_REFRESH_DEGREES = 0.45;
+// Na een curatoractie volgt na deze stilte nog een volledige herlading, voor wat buiten beeld veranderde.
+const FULL_REFRESH_DELAY_MS = 15000;
+let fullRefreshTimer = null;
+
+/**
+ * Na een curatoractie: enkel de rijen in het huidige kaartbeeld opnieuw ophalen (/api/stops/bbox, ~0,1 s)
+ * i.p.v. de volledige set (~3,5 s opbouw + 3 MB, gemeten 2026-11-11). De curator werkt aan wat hij ziet, en
+ * de server bouwt de volledige set intussen op de achtergrond opnieuw op; die halen we na
+ * FULL_REFRESH_DELAY_MS stil op, voor wat de actie buiten beeld raakte (bv. een oude parent verderop).
+ */
+async function refreshAfterEdit() {
+  // selectStop pant net vóór deze aanroep vaak nog naar de halte: het kader van het eindbeeld nemen.
+  if (state.map.isMoving()) await new Promise((resolve) => state.map.once("moveend", resolve));
+  const view = state.map.getBounds();
+  const padLon = (view.getEast() - view.getWest()) * 0.1;
+  const padLat = (view.getNorth() - view.getSouth()) * 0.1;
+  const box = {
+    minLon: view.getWest() - padLon, minLat: view.getSouth() - padLat,
+    maxLon: view.getEast() + padLon, maxLat: view.getNorth() + padLat,
+  };
+  if (box.maxLon - box.minLon > MAX_REFRESH_DEGREES || box.maxLat - box.minLat > MAX_REFRESH_DEGREES) {
+    await loadStops();
+    return;
+  }
+  const mine = ++loadStopsGeneration;
+  const doneLoading = showMapLoading(mine, false);
+  let data;
+  try {
+    data = await apiFetch("/api/stops/bbox?" + new URLSearchParams(box));
+  } catch (e) {
+    doneLoading();
+    throw e;
+  }
+  if (mine !== loadStopsGeneration) return;
+  const fresh = data.stops.map(decodeMapRow);
+  const freshIds = new Set(fresh.map((p) => p.id));
+  const inBox = (p) => p.lon >= box.minLon && p.lon <= box.maxLon && p.lat >= box.minLat && p.lat <= box.maxLat;
+  // Zelfde regel als de server: een StopPlace hoort bij het kader als zijn punt erin ligt, een quay van een
+  // vlak volgt zijn vlak (root). Wat de server terugstuurt, vervangt sowieso de oude rij met dat id.
+  const removed = new Set();
+  for (const p of state.stopsById.values()) {
+    if (freshIds.has(p.id) || (!p.isQuay && inBox(p))) removed.add(p.id);
+  }
+  for (const p of state.stopsById.values()) {
+    if (p.isQuay && removed.has(p.root)) removed.add(p.id);
+  }
+  for (const id of removed) state.stopsById.delete(id);
+  for (const p of fresh) state.stopsById.set(p.id, p);
+  renderStops().then(doneLoading);
+  clearTimeout(fullRefreshTimer);
+  fullRefreshTimer = setTimeout(() => loadStops({ quiet: true }).catch(() => { /* volgende keer beter */ }), FULL_REFRESH_DELAY_MS);
+}
+
+// Laadmelding aan (tenzij stil); geeft de functie terug die hem weer verbergt, als er intussen niets nieuwers liep.
+function showMapLoading(generation, quiet) {
+  const loading = document.getElementById("map-loading");
+  if (!quiet) loading.hidden = false;
+  return () => {
+    if (generation === loadStopsGeneration) loading.hidden = true;
+  };
+}
+
+// state.stopsById -> de twee kaartbronnen. Belooft "getekend", zie whenStopsDrawn.
+function renderStops() {
+  clearMovedMarker();
+  const points = [];
+  const areas = [];
+  for (const props of state.stopsById.values()) {
     if (props.ring) {
       areas.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [props.ring] }, properties: { id: props.id, f: props.flags } });
       continue;
@@ -602,7 +672,7 @@ async function loadStops() {
   applyMapFilter();
   state.map.getSource("areas").setData({ type: "FeatureCollection", features: areas });
   state.map.getSource("stops").setData({ type: "FeatureCollection", features: points });
-  whenStopsDrawn().then(doneLoading);
+  return whenStopsDrawn();
 }
 
 // Klaar zodra de stippen hun tegels opnieuw hebben (~0,4 s na setData), niet pas bij "idle": dat wacht ook
@@ -688,7 +758,7 @@ function startMoveMarker(props, onStarted) {
     } catch (e) {
       showError(e);
     }
-    await loadStops(); // bij een fout staat de stip nog op de oude plek, bij succes op de nieuwe
+    await refreshAfterEdit(); // bij een fout staat de stip nog op de oude plek, bij succes op de nieuwe
   });
   state.movedMarker = marker;
   state.map.easeTo({ center: [props.lon, props.lat], zoom: Math.max(state.map.getZoom(), mapZoom(DETAIL_ZOOM)) });
@@ -1063,7 +1133,7 @@ function wirePanelActions(detail) {
     reviewBtn.addEventListener("click", () => guarded(async () => {
       await apiFetch("/api/stops/" + detail.id + "/review", { method: "POST" });
       await selectStop(detail.id);
-      await loadStops(); // laat de halte meteen verdwijnen als de "enkel nog te bekijken"-kaart actief is
+      await refreshAfterEdit(); // laat de halte meteen verdwijnen als de "enkel nog te bekijken"-kaart actief is
     }));
   }
   const unreviewBtn = document.getElementById("unreview-btn");
@@ -1071,7 +1141,7 @@ function wirePanelActions(detail) {
     unreviewBtn.addEventListener("click", () => guarded(async () => {
       await apiFetch("/api/stops/" + detail.id + "/review", { method: "DELETE" });
       await selectStop(detail.id);
-      await loadStops();
+      await refreshAfterEdit();
     }));
   }
 
@@ -1094,7 +1164,7 @@ function wirePanelActions(detail) {
       try {
         await apiFetch("/api/stops/" + detail.id + "/reset-location", { method: "POST" });
         await selectStop(detail.id);
-        await loadStops();
+        await refreshAfterEdit();
       } catch (e) {
         showError(e);
       }
@@ -1107,7 +1177,7 @@ function wirePanelActions(detail) {
       try {
         await apiFetch("/api/stops/" + detail.id + "/recompute-location", { method: "POST" });
         await selectStop(detail.id);
-        await loadStops(); // marker verplaatst zich mee op de kaart
+        await refreshAfterEdit(); // marker verplaatst zich mee op de kaart
       } catch (e) {
         showError(e);
       }
@@ -1121,7 +1191,7 @@ function wirePanelActions(detail) {
       try {
         await apiFetch("/api/stops/" + detail.id, { method: "DELETE" });
         closePanel();
-        await loadStops();
+        await refreshAfterEdit();
       } catch (e) {
         showError(e);
       }
@@ -1132,7 +1202,7 @@ function wirePanelActions(detail) {
     restoreBtn.addEventListener("click", () => guarded(async () => {
       await apiFetch("/api/stops/" + detail.id + "/restore", { method: "POST" });
       await selectStop(detail.id);
-      await loadStops();
+      await refreshAfterEdit();
     }));
   }
 
@@ -1172,7 +1242,7 @@ function wirePanelActions(detail) {
       };
       const save = async () => {
         await apiFetch("/api/stops/" + detail.id, { method: "PATCH", body: JSON.stringify(body) });
-        await loadStops();
+        await refreshAfterEdit();
         await selectStop(detail.id);
       };
       try {
@@ -1250,7 +1320,7 @@ function openPromoteDialog(detail) {
         body: JSON.stringify({ name: event.target.elements.name.value }),
       });
       closeDialog();
-      await loadStops();
+      await refreshAfterEdit();
       await selectStop(detail.id);
     } catch (e) {
       showActionError(document.getElementById("promote-error"), e);
@@ -1339,7 +1409,7 @@ function wireCreateNode() {
           body: JSON.stringify(Object.assign({}, baseBody, { allowDuplicateName })),
         });
         closeDialog();
-        await loadStops();
+        await refreshAfterEdit();
       };
       try {
         await submit(false);
@@ -1499,7 +1569,7 @@ async function openGroupDialog(picked, after = null) {
       closeDialog();
       closePanel();
       exitGroupMode();
-      await loadStops();
+      await refreshAfterEdit();
       after?.(true);
     };
     try {
@@ -1697,7 +1767,7 @@ async function confirmMerge(pickedSourceId, pickedTargetId) {
       });
       closeDialog();
       closePanel();
-      await loadStops();
+      await refreshAfterEdit();
     } catch (e) {
       showActionError(errorEl, e);
     }

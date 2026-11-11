@@ -5,6 +5,7 @@ import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.DuplicateQuay;
 import be.gtfsbe.chb.dto.ModeMismatch;
+import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
 import be.gtfsbe.chb.dto.ReviewStats;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 
 /**
@@ -58,6 +60,20 @@ public class PublicStopController {
     @GetMapping("/api/stops")
     public ResponseEntity<byte[]> stops(Locale locale) {
         return mapResponse(mapCache.get(locale.getLanguage()));
+    }
+
+    // Groter mag niet: dit antwoord is niet gecachet, een heel-België-kader zou telkens de volle opbouw kosten.
+    private static final double MAX_BBOX_DEGREES = 0.5;
+
+    /** De rijen van {@link #stops} in een klein kader: de kaart ververst er de omgeving van een curatoractie mee. */
+    @GetMapping("/api/stops/bbox")
+    public Map<String, List<Object[]>> stopsInBox(@RequestParam double minLon, @RequestParam double minLat,
+                                                             @RequestParam double maxLon, @RequestParam double maxLat,
+                                                             Locale locale) {
+        if (!(minLon < maxLon && minLat < maxLat) || maxLon - minLon > MAX_BBOX_DEGREES || maxLat - minLat > MAX_BBOX_DEGREES) {
+            throw new InvalidRequestException("Ongeldig kader: min < max en hoogstens " + MAX_BBOX_DEGREES + " graden breed en hoog");
+        }
+        return Map.of("stops", repository.findMapRows(locale.getLanguage(), new MapBounds(minLon, minLat, maxLon, maxLat)));
     }
 
     @GetMapping("/api/stops/{id}")

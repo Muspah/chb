@@ -3,6 +3,7 @@ package be.gtfsbe.chb.repository;
 import be.gtfsbe.chb.dto.BrusselsNames;
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.DuplicateQuay;
+import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.ModeMismatch;
 import be.gtfsbe.chb.dto.MultimodeQuay;
@@ -141,14 +142,29 @@ public class StopViewerRepository {
     /**
      * Alle kaartpunten als compacte rijen (geen GeoJSON: ~92K features, de sleutels per feature waren het
      * grootste deel van de payload). Kolommen, zie {@code decodeMapRow} in app.js:
-     * {@code [id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, flags, ring?]}, met kind
+     * {@code [id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, flags, extra?]}, met kind
      * {@code q} quay, {@code w} wrapper, {@code g} curated groep (synthetisch), {@code p} andere StopPlace, en
      * flags {@link #FLAG_DISABLED}/{@link #FLAG_REVIEWED}. Ook uitgeschakelde en nagekeken haltes: filteren doet de kaart.
-     * Een {@code ring} ({@code [[lon,lat],...]}) maakt er een vlak van; de quays van dat vlak volgen als eigen rijen.
+     * {@code extra} is bij een StopPlace een {@code ring} ({@code [[lon,lat],...]}): dan is het een vlak, en volgen
+     * zijn quays als eigen rijen; bij zo'n quay is {@code extra} het id van dat vlak (ook als de quay onder een
+     * monomodal ervan hangt), zodat de kaart bij een gedeeltelijke verversing weet welke quays bij een vlak horen.
      */
     public List<Object[]> findMapRows(String lang) {
-        List<Object[]> rows = new ArrayList<>(jdbcTemplate.query(MAP_FEATURES_BASE_SQL,
-            (rs, rowNum) -> mapRow(rs, lang), REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY));
+        return findMapRows(lang, null);
+    }
+
+    /**
+     * Enkel de StopPlaces met hun punt in {@code bounds} (en de quays van hun vlakken), voor de verversing rond
+     * een curatoractie; {@code null} = alles. Snel dankzij de GiST-index op {@code chb.stop.geom}.
+     */
+    public List<Object[]> findMapRows(String lang, MapBounds bounds) {
+        String sql = MAP_FEATURES_BASE_SQL;
+        List<Object> params = new ArrayList<>(List.of(REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY));
+        if (bounds != null) {
+            sql += "AND s.geom && ST_MakeEnvelope(?, ?, ?, ?, 4326)\n";
+            params.addAll(List.of(bounds.minLon(), bounds.minLat(), bounds.maxLon(), bounds.maxLat()));
+        }
+        List<Object[]> rows = new ArrayList<>(jdbcTemplate.query(sql, (rs, rowNum) -> mapRow(rs, lang), params.toArray()));
         rows.addAll(quayRowsFor(rows, lang));
         return rows;
     }
@@ -176,7 +192,7 @@ public class StopViewerRepository {
                 return new Object[] {
                     rs.getLong("id"), round6(rs.getDouble("lon")), round6(rs.getDouble("lat")),
                     names.display(rs.getLong("id"), lang, rs.getString("name")), rs.getString("public_code"),
-                    rs.getLong("stop_id"), rs.getString("transport_mode"), disabledAt, "q", flags};
+                    rs.getLong("stop_id"), rs.getString("transport_mode"), disabledAt, "q", flags, rs.getLong("root")};
             }, ids, ids);
     }
 
