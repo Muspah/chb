@@ -56,9 +56,8 @@ public class PublicStopController {
 
     /** Alle kaartpunten in één keer, compact (zie {@link StopViewerRepository#findMapRows}). */
     @GetMapping("/api/stops")
-    public ResponseEntity<byte[]> stops(@RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled,
-                                        Locale locale) {
-        return mapResponse(mapCache.get(false, showDisabled, locale.getLanguage()));
+    public ResponseEntity<byte[]> stops(Locale locale) {
+        return mapResponse(mapCache.get(locale.getLanguage()));
     }
 
     @GetMapping("/api/stops/{id}")
@@ -92,12 +91,6 @@ public class PublicStopController {
     @GetMapping("/api/review/stats")
     public ReviewStats reviewStats() {
         return repository.reviewStats();
-    }
-
-    @GetMapping("/api/review/unreviewed-map")
-    public ResponseEntity<byte[]> unreviewedMap(@RequestParam(name = "showDisabled", defaultValue = "false") boolean showDisabled,
-                                                Locale locale) {
-        return mapResponse(mapCache.get(true, showDisabled, locale.getLanguage()));
     }
 
     @GetMapping("/api/review/unreviewed")

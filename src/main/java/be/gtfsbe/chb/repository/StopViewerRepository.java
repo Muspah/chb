@@ -28,6 +28,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -109,6 +110,7 @@ public class StopViewerRepository {
     // waren 70% van de payload; bij een buffer van 8 m zie je het verschil niet.
     private static final String MAP_FEATURES_BASE_SQL = """
         SELECT s.id, s.name, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at, s.transport_mode,
+               EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?) AS reviewed,
                CASE WHEN NOT s.is_wrapper THEN (
                    SELECT ST_AsText(ST_Buffer(ST_ConvexHull(ST_Collect(q.geom))::geography, 8, 'quad_segs=2')::geometry, 5)
                    FROM (SELECT s.id AS sid UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = s.id) x
@@ -128,30 +130,24 @@ public class StopViewerRepository {
         )
         """;
 
-    // disabled_at wordt server-side (import-repo) automatisch gezet/gecascadeerd op basis van
-    // bronfeed-aanwezigheid — deze app leest het enkel. Standaard uitgefilterd (net als
-    // deleted_at hierboven), tenzij de "toon uitgeschakelde haltes"-toggle in de frontend aanstaat.
-    private static String disabledFilterSql(boolean showDisabled) {
-        return showDisabled ? "" : "AND s.disabled_at IS NULL\n";
-    }
+    // Vlaggen per rij (bitmasker), zodat de kaart "enkel nog te bekijken" en "toon uitgeschakelde" in de
+    // browser filtert i.p.v. per variant een nieuwe set op te halen. Voor een quay van een vlak tellen
+    // ook die van de StopPlace van het vlak: een nagekeken of uitgeschakelde groep verbergt haar quays mee.
+    static final int FLAG_DISABLED = 1;
+    static final int FLAG_REVIEWED = 2;
 
     /**
-     * Alle kaartpunten als compacte rijen (geen GeoJSON: ~50K features, de sleutels per feature waren het
+     * Alle kaartpunten als compacte rijen (geen GeoJSON: ~92K features, de sleutels per feature waren het
      * grootste deel van de payload). Kolommen, zie {@code decodeMapRow} in app.js:
-     * {@code [id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, ring?]}, met kind
-     * {@code q} quay, {@code w} wrapper, {@code g} curated groep (synthetisch), {@code p} andere StopPlace.
+     * {@code [id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, flags, ring?]}, met kind
+     * {@code q} quay, {@code w} wrapper, {@code g} curated groep (synthetisch), {@code p} andere StopPlace, en
+     * flags {@link #FLAG_DISABLED}/{@link #FLAG_REVIEWED}. Ook uitgeschakelde en nagekeken haltes: filteren doet de kaart.
      * Een {@code ring} ({@code [[lon,lat],...]}) maakt er een vlak van; de quays van dat vlak volgen als eigen rijen.
-     * {@code unreviewed}: de "doorlichtingskaart", enkel nog niet nagekeken haltes.
      */
-    public List<Object[]> findMapRows(boolean unreviewed, boolean showDisabled, String lang) {
-        String sql = MAP_FEATURES_BASE_SQL + disabledFilterSql(showDisabled);
-        Object[] params = {DELETED_ATTRIBUTE_KEY};
-        if (unreviewed) {
-            sql += "AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)\n";
-            params = new Object[] {DELETED_ATTRIBUTE_KEY, REVIEWED_ATTRIBUTE_KEY};
-        }
-        List<Object[]> rows = new ArrayList<>(jdbcTemplate.query(sql, (rs, rowNum) -> mapRow(rs, lang), params));
-        rows.addAll(quayRowsFor(rows, showDisabled, lang));
+    public List<Object[]> findMapRows(String lang) {
+        List<Object[]> rows = new ArrayList<>(jdbcTemplate.query(MAP_FEATURES_BASE_SQL,
+            (rs, rowNum) -> mapRow(rs, lang), REVIEWED_ATTRIBUTE_KEY, DELETED_ATTRIBUTE_KEY));
+        rows.addAll(quayRowsFor(rows, lang));
         return rows;
     }
 
@@ -159,21 +155,27 @@ public class StopViewerRepository {
     // stops, gemeten 2026-10-13); de UNION-ALL-join gebruikt ix_quay_stop (45 ms).
     // Een groep (StopPlace met vlak) heeft geen eigen stip meer: haar quays zijn de stippen, het
     // vlak toont dat ze bij elkaar horen. Quays van een general: die van zijn monomodals (één niveau).
-    private List<Object[]> quayRowsFor(List<Object[]> stops, boolean showDisabled, String lang) {
-        String ids = stops.stream().filter(r -> r.length > 9)
-                .map(r -> String.valueOf(r[0])).collect(Collectors.joining(",", "{", "}"));
-        if (ids.equals("{}")) return List.of();
+    private List<Object[]> quayRowsFor(List<Object[]> stops, String lang) {
+        Map<Long, Integer> areaFlags = new HashMap<>();
+        for (Object[] r : stops) {
+            if (r.length > 10) areaFlags.put((Long) r[0], (Integer) r[9]);
+        }
+        if (areaFlags.isEmpty()) return List.of();
+        String ids = areaFlags.keySet().stream().map(String::valueOf).collect(Collectors.joining(",", "{", "}"));
         return jdbcTemplate.query("""
-            SELECT q.id, q.name, q.public_code, q.lat, q.lon, q.stop_id, q.disabled_at, q.transport_mode
-            FROM (SELECT unnest(?::bigint[]) AS sid
-                  UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = ANY(?::bigint[])) x
+            SELECT q.id, q.name, q.public_code, q.lat, q.lon, q.stop_id, q.disabled_at, q.transport_mode, x.root
+            FROM (SELECT a AS root, a AS sid FROM unnest(?::bigint[]) a
+                  UNION ALL SELECT c.parent_id, c.id FROM chb.stop c WHERE c.parent_id = ANY(?::bigint[])) x
             JOIN chb.quay q ON q.stop_id = x.sid
             WHERE q.merged_into_id IS NULL AND q.lat IS NOT NULL AND q.lon IS NOT NULL
-            """ + (showDisabled ? "" : "AND q.disabled_at IS NULL\n"), (rs, n) -> new Object[] {
-                rs.getLong("id"), round6(rs.getDouble("lon")), round6(rs.getDouble("lat")),
-                names.display(rs.getLong("id"), lang, rs.getString("name")), rs.getString("public_code"),
-                rs.getLong("stop_id"), rs.getString("transport_mode"), rs.getObject("disabled_at", OffsetDateTime.class), "q"},
-            ids, ids);
+            """, (rs, n) -> {
+                OffsetDateTime disabledAt = rs.getObject("disabled_at", OffsetDateTime.class);
+                int flags = areaFlags.get(rs.getLong("root")) | (disabledAt != null ? FLAG_DISABLED : 0);
+                return new Object[] {
+                    rs.getLong("id"), round6(rs.getDouble("lon")), round6(rs.getDouble("lat")),
+                    names.display(rs.getLong("id"), lang, rs.getString("name")), rs.getString("public_code"),
+                    rs.getLong("stop_id"), rs.getString("transport_mode"), disabledAt, "q", flags};
+            }, ids, ids);
     }
 
     // ~10 cm: meer decimalen zijn ruis en kosten enkel payload.
@@ -197,13 +199,15 @@ public class StopViewerRepository {
         long parentId = rs.getLong("parent_id");
         Long parent = rs.wasNull() ? null : parentId;
         String kind = rs.getBoolean("is_wrapper") ? "w" : rs.getBoolean("is_synthetic") ? "g" : "p";
+        OffsetDateTime disabledAt = rs.getObject("disabled_at", OffsetDateTime.class);
+        int flags = (disabledAt != null ? FLAG_DISABLED : 0) | (rs.getBoolean("reviewed") ? FLAG_REVIEWED : 0);
         Object[] row = {rs.getLong("id"), round6(rs.getDouble("lon")), round6(rs.getDouble("lat")),
             names.display(rs.getLong("id"), lang, rs.getString("name")), rs.getString("public_code"), parent,
-            rs.getString("transport_mode"), rs.getObject("disabled_at", OffsetDateTime.class), kind};
+            rs.getString("transport_mode"), disabledAt, kind, flags};
         String areaWkt = rs.getString("area_wkt");
         if (areaWkt == null || !areaWkt.startsWith("POLYGON")) return row;
-        Object[] area = Arrays.copyOf(row, 10);
-        area[9] = ringFromWkt(areaWkt);
+        Object[] area = Arrays.copyOf(row, 11);
+        area[10] = ringFromWkt(areaWkt);
         return area;
     }
 

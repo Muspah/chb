@@ -10,8 +10,8 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * De volledige kaartset ({@link StopViewerRepository#findMapRows}) als kant-en-klare JSON per variant
- * (doorlichtingskaart, uitgeschakelde tonen, taal). Opbouwen kost een volle tabelscan (>1 s), dus pas opnieuw
+ * De volledige kaartset ({@link StopViewerRepository#findMapRows}) als kant-en-klare JSON per taal; de
+ * filters (doorlichtingskaart, uitgeschakelde tonen) past de kaart zelf toe. Opbouwen kost een volle tabelscan (>1 s), dus pas opnieuw
  * na een curator-schrijfactie ({@link #invalidate()}) of een nieuwe namenversie: de {@link StopNameCache}
  * ververst elke 5 minuten, zo komen ook imports binnen. De ETag is een hash van de inhoud, dus een
  * herbouw zonder echte wijziging geeft de browser gewoon een 304.
@@ -45,10 +45,9 @@ public class StopMapCache {
         edits.incrementAndGet();
     }
 
-    // ponytail: één slot voor alle varianten; per sleutel locken als een opbouw anderen merkbaar ophoudt.
-    public synchronized Snapshot get(boolean unreviewed, boolean showDisabled, String lang) {
-        String l = LANGS.contains(lang) ? lang : "";
-        String key = unreviewed + "/" + showDisabled + "/" + l;
+    // ponytail: één slot voor alle talen; per taal locken als een opbouw anderen merkbaar ophoudt.
+    public synchronized Snapshot get(String lang) {
+        String key = LANGS.contains(lang) ? lang : "";
         // Versies vóór het lezen vastleggen: een wijziging tijdens de opbouw maakt deze entry meteen weer oud.
         long namesVersion = names.version();
         long edited = edits.get();
@@ -56,7 +55,7 @@ public class StopMapCache {
         if (entry != null && entry.namesVersion() == namesVersion && entry.edits() == edited) {
             return entry.snapshot();
         }
-        byte[] json = jsonMapper.writeValueAsBytes(Map.of("stops", repository.findMapRows(unreviewed, showDisabled, l)));
+        byte[] json = jsonMapper.writeValueAsBytes(Map.of("stops", repository.findMapRows(key)));
         // Zwak: Tomcat comprimeert geen antwoord met een sterke ETag (de gzip-bytes zijn niet dezelfde).
         Snapshot snapshot = new Snapshot(json, "W/\"" + DigestUtils.md5DigestAsHex(json) + "\"");
         entries.put(key, new Entry(snapshot, namesVersion, edited));

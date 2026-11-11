@@ -525,9 +525,9 @@ function wireMapHover() {
 }
 
 // Eén rij uit /api/stops (StopViewerRepository.findMapRows) -> de props die de rest van de kaart gebruikt.
-function decodeMapRow([id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, ring]) {
+function decodeMapRow([id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, kind, flags, ring]) {
   return {
-    id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, ring,
+    id, lon, lat, name, publicCode, parentId, transportMode, disabledAt, flags, ring,
     isQuay: kind === "q",
     isWrapper: kind === "w",
     isSynthetic: kind === "g",
@@ -562,19 +562,15 @@ function ringBounds(ring) {
 // Een trage eerdere aanvraag mag het nieuwere beeld niet overschrijven (issue #17).
 let loadStopsGeneration = 0;
 
+// Vlaggen per rij, zie StopViewerRepository.FLAG_*.
+const FLAG_DISABLED = 1;
+const FLAG_REVIEWED = 2;
+
 async function loadStops() {
-  // curator-check hier ook: een gedeelde link met ?unreviewed=1 mag voor een niet-curator (of
-  // nog niet ingelogde bezoeker) niet op een 403 van het curator-only endpoint stuiten — die
-  // valt gewoon terug op de volledige kaart.
-  const useUnreviewed = state.showOnlyUnreviewed && state.me.curator;
-  const path = useUnreviewed ? "/api/review/unreviewed-map" : "/api/stops";
-  // Altijd de volledige set (~92K, compact): de server cachet hem en de browser hervalideert met de
-  // ETag, dus zonder wijziging is dit een 304 zonder body. Pannen en zoomen vragen niets meer op.
-  // Server filtert disabled_at IS NOT NULL-haltes standaard al weg (StopViewerRepository) — de
-  // toggle vraagt gewoon de ongefilterde set op i.p.v. hier client-side te filteren.
-  const query = state.showDisabled ? "?showDisabled=1" : "";
+  // Altijd de volledige set (~92K, compact) met vlaggen: de server cachet hem en de browser hervalideert
+  // met de ETag, dus zonder wijziging is dit een 304 zonder body. "Enkel nog te bekijken" en "toon
+  // uitgeschakelde" filtert de kaart zelf (applyMapFilter): wisselen vraagt niets op.
   const mine = ++loadStopsGeneration;
-  // Zichtbaar tot de kaart de nieuwe data getekend heeft (idle), niet enkel tot het antwoord binnen is.
   const loading = document.getElementById("map-loading");
   const doneLoading = () => {
     if (mine === loadStopsGeneration) loading.hidden = true;
@@ -582,7 +578,7 @@ async function loadStops() {
   loading.hidden = false;
   let data;
   try {
-    [data] = await Promise.all([apiFetch(path + query), state.mapReady]);
+    [data] = await Promise.all([apiFetch("/api/stops"), state.mapReady]);
   } catch (e) {
     doneLoading();
     throw e;
@@ -596,16 +592,51 @@ async function loadStops() {
     const props = decodeMapRow(row);
     state.stopsById.set(props.id, props);
     if (props.ring) {
-      areas.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [props.ring] }, properties: { id: props.id } });
+      areas.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [props.ring] }, properties: { id: props.id, f: props.flags } });
       continue;
     }
-    const p = { id: props.id, k: props.disabledAt ? "d" : props.isSynthetic ? "g" : "s" };
+    const p = { id: props.id, f: props.flags, k: props.disabledAt ? "d" : props.isSynthetic ? "g" : "s" };
     if (MODE_ICONS[props.transportMode]) p.icon = "mode-" + props.transportMode;
     points.push({ type: "Feature", geometry: { type: "Point", coordinates: [props.lon, props.lat] }, properties: p });
   }
+  applyMapFilter();
   state.map.getSource("areas").setData({ type: "FeatureCollection", features: areas });
   state.map.getSource("stops").setData({ type: "FeatureCollection", features: points });
-  state.map.once("idle", doneLoading);
+  whenStopsDrawn().then(doneLoading);
+}
+
+// Klaar zodra onze twee bronnen hun tegels opnieuw hebben (~0,4 s na setData), niet pas bij "idle": dat
+// wacht ook op OSM-tegels en fades (~2 s extra, gemeten 2026-11-11). Idle blijft het vangnet, bv. als de
+// vlakken op dit zoomniveau geen tegels laden.
+function whenStopsDrawn() {
+  return new Promise((resolve) => {
+    const pending = new Set(["stops", "areas"]);
+    const finish = () => {
+      state.map.off("sourcedata", onData);
+      state.map.off("idle", finish);
+      resolve();
+    };
+    const onData = (e) => {
+      // metadata/content: de bron zelf meldt nieuwe data; pas een tegel-event met isSourceLoaded is "getekend".
+      if (pending.has(e.sourceId) && !e.sourceDataType && e.isSourceLoaded) pending.delete(e.sourceId);
+      if (pending.size === 0) finish();
+    };
+    state.map.on("sourcedata", onData);
+    state.map.once("idle", finish);
+  });
+}
+
+// "Enkel nog te bekijken" (curator; een gedeelde ?unreviewed=1-link doet niets voor anderen) en
+// "toon uitgeschakelde" als filter op de lagen. Voor een quay van een vlak zet de server de vlaggen
+// van dat vlak mee, dus een nagekeken groep verdwijnt met haar quays.
+function applyMapFilter() {
+  if (!state.map.getLayer("stop-dot")) return; // stijl nog niet geladen: loadStops past de filter toe
+  const conditions = [];
+  if (!state.showDisabled) conditions.push(["==", ["%", ["get", "f"], FLAG_DISABLED * 2], 0]);
+  if (state.showOnlyUnreviewed && state.me.curator) conditions.push(["<", ["%", ["get", "f"], FLAG_REVIEWED * 2], FLAG_REVIEWED]);
+  const filter = ["all", ...conditions];
+  for (const layer of ["area-fill", "area-line", "stop-dot"]) state.map.setFilter(layer, filter);
+  state.map.setFilter("stop-icon", ["all", ["has", "icon"], ...conditions]);
 }
 
 function onMarkerClick(id) {
@@ -1711,7 +1742,7 @@ function wireUnreviewedMapToggle() {
     applyUnreviewedToggleUi();
     persistUnreviewedToggle(state.showOnlyUnreviewed);
     closePanel();
-    await loadStops();
+    applyMapFilter();
   });
 }
 
@@ -1732,7 +1763,7 @@ function wireShowDisabledToggle() {
     state.showDisabled = !state.showDisabled;
     applyDisabledToggleUi();
     persistDisabledToggle(state.showDisabled);
-    await loadStops();
+    applyMapFilter();
   });
 }
 

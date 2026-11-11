@@ -104,7 +104,7 @@ public class SecurityConfig {
                 // deze default zodra er een "opgeslagen request" bestaat — en die wordt ook
                 // opgeslagen voor een niet-geauthenticeerde /api/**-aanroep die zelf via
                 // exceptionHandling hierboven al netjes met een JSON-401 wordt afgehandeld (bv.
-                // de curator-only /api/review/unreviewed-map-toggle terwijl de sessie net
+                // een curator-only /api/review/-rapport terwijl de sessie net
                 // verlopen was). Resultaat: na inloggen kon je op zo'n API-endpoint (JSON, geen
                 // kaart) belanden i.p.v. terug op de SPA. Dit is een single-page app zonder
                 // deep-linkbare server-routes buiten "/" — er is dus nooit een geldige reden om
