@@ -639,9 +639,26 @@ async function refreshAfterEdit() {
   for (const p of state.stopsById.values()) {
     if (p.isQuay && removed.has(p.root)) removed.add(p.id);
   }
-  for (const id of removed) state.stopsById.delete(id);
-  for (const p of fresh) state.stopsById.set(p.id, p);
-  renderStops().then(doneLoading);
+  // Enkel de gewijzigde features naar de kaart (updateData) i.p.v. alle ~93K opnieuw (setData): tekenen
+  // ~0,2 i.p.v. ~0,4 s (gemeten 2026-11-11). Verwijderen gaat vóór toevoegen, dus een vervangen id mag in beide.
+  const diff = { stops: { remove: [], add: [] }, areas: { remove: [], add: [] } };
+  for (const id of removed) {
+    diff[state.stopsById.get(id).ring ? "areas" : "stops"].remove.push(id);
+    state.stopsById.delete(id);
+  }
+  for (const p of fresh) {
+    state.stopsById.set(p.id, p);
+    diff[p.ring ? "areas" : "stops"].add.push(mapFeature(p));
+  }
+  clearMovedMarker();
+  const changed = (d) => d.remove.length || d.add.length;
+  if (changed(diff.areas)) state.map.getSource("areas").updateData(diff.areas);
+  if (!changed(diff.stops)) {
+    doneLoading(); // geen stippen gewijzigd: er komen geen tegel-events, niet op idle wachten
+  } else {
+    state.map.getSource("stops").updateData(diff.stops);
+    whenStopsDrawn().then(doneLoading);
+  }
   clearTimeout(fullRefreshTimer);
   fullRefreshTimer = setTimeout(() => loadStops({ quiet: true }).catch(() => { /* volgende keer beter */ }), FULL_REFRESH_DELAY_MS);
 }
@@ -655,20 +672,23 @@ function showMapLoading(generation, quiet) {
   };
 }
 
+// Eén rij als feature voor de bron "areas" (met ring) of "stops". Het id staat ook bovenaan de feature:
+// updateData (refreshAfterEdit) vindt features op dat id. StopPlace- en quay-id's zijn disjunct.
+function mapFeature(props) {
+  if (props.ring) {
+    return { type: "Feature", id: props.id, geometry: { type: "Polygon", coordinates: [props.ring] }, properties: { id: props.id, f: props.flags } };
+  }
+  const p = { id: props.id, f: props.flags, k: props.disabledAt ? "d" : props.isSynthetic ? "g" : "s" };
+  if (MODE_ICONS[props.transportMode]) p.icon = "mode-" + props.transportMode;
+  return { type: "Feature", id: props.id, geometry: { type: "Point", coordinates: [props.lon, props.lat] }, properties: p };
+}
+
 // state.stopsById -> de twee kaartbronnen. Belooft "getekend", zie whenStopsDrawn.
 function renderStops() {
   clearMovedMarker();
   const points = [];
   const areas = [];
-  for (const props of state.stopsById.values()) {
-    if (props.ring) {
-      areas.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [props.ring] }, properties: { id: props.id, f: props.flags } });
-      continue;
-    }
-    const p = { id: props.id, f: props.flags, k: props.disabledAt ? "d" : props.isSynthetic ? "g" : "s" };
-    if (MODE_ICONS[props.transportMode]) p.icon = "mode-" + props.transportMode;
-    points.push({ type: "Feature", geometry: { type: "Point", coordinates: [props.lon, props.lat] }, properties: p });
-  }
+  for (const props of state.stopsById.values()) (props.ring ? areas : points).push(mapFeature(props));
   applyMapFilter();
   state.map.getSource("areas").setData({ type: "FeatureCollection", features: areas });
   state.map.getSource("stops").setData({ type: "FeatureCollection", features: points });
