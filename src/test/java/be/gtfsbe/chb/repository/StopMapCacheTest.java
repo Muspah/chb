@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -22,7 +23,7 @@ class StopMapCacheTest {
     private final StopMapCache cache = new StopMapCache(repository, names, JsonMapper.builder().build());
 
     @Test
-    void rebuildsOnlyAfterAnEditOrNewNames() {
+    void rebuildsAfterAnEditAndRefreshesNewNamesInTheBackground() {
         List<Object[]> rows = List.<Object[]>of(new Object[] {1L, 4.35, 50.85, "Centraal", null, null, "bus", null, "w", 2});
         when(repository.findMapRows(anyString())).thenReturn(rows);
 
@@ -37,9 +38,10 @@ class StopMapCacheTest {
         verify(repository, times(2)).findMapRows("nl");
         assertEquals(first.etag(), afterEdit.etag()); // zelfde inhoud: de browser krijgt een 304
 
+        // Nieuwe namen (5-minutenverversing): meteen de vorige set, de nieuwe komt op de achtergrond.
         when(names.version()).thenReturn(1L);
-        cache.get("nl");
-        verify(repository, times(3)).findMapRows("nl");
+        assertSame(afterEdit, cache.get("nl"));
+        verify(repository, timeout(2000).times(3)).findMapRows("nl");
 
         // Een onbekende taal deelt de defaultvariant; een andere inhoud geeft een andere ETag.
         when(repository.findMapRows("")).thenReturn(List.<Object[]>of(new Object[] {2L}));

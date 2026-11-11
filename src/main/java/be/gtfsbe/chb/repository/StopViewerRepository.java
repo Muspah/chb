@@ -108,11 +108,13 @@ public class StopViewerRepository {
     // Geen viewport-filter: de kaart haalt de volledige set één keer op, gecachet in StopMapCache (>1 s per opbouw).
     // Vlak: quad_segs=2 en 5 decimalen (~1 m) i.p.v. de standaard 8 en 6, gemiddeld 35 punten per ring
     // waren 70% van de payload; bij een buffer van 8 m zie je het verschil niet.
+    // Bufferen in EPSG:3035 (ETRS89-LAEA, meter, heel Europa) i.p.v. op geography: de vlakken waren 1,9 van de
+    // 2,2 s query, zo 0,8 s; vorm gelijk op <1 m (gemeten 2026-11-11). Lambert 72 dekt de haltes over de grens niet.
     private static final String MAP_FEATURES_BASE_SQL = """
         SELECT s.id, s.name, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at, s.transport_mode,
                EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?) AS reviewed,
                CASE WHEN NOT s.is_wrapper THEN (
-                   SELECT ST_AsText(ST_Buffer(ST_ConvexHull(ST_Collect(q.geom))::geography, 8, 'quad_segs=2')::geometry, 5)
+                   SELECT ST_AsText(ST_Transform(ST_Buffer(ST_Transform(ST_ConvexHull(ST_Collect(q.geom)), 3035), 8, 'quad_segs=2'), 4326), 5)
                    FROM (SELECT s.id AS sid UNION ALL SELECT c.id FROM chb.stop c WHERE c.parent_id = s.id) x
                    JOIN chb.quay q ON q.stop_id = x.sid
                    WHERE q.merged_into_id IS NULL AND q.geom IS NOT NULL
