@@ -574,7 +574,19 @@ async function loadStops() {
   // toggle vraagt gewoon de ongefilterde set op i.p.v. hier client-side te filteren.
   const query = state.showDisabled ? "?showDisabled=1" : "";
   const mine = ++loadStopsGeneration;
-  const [data] = await Promise.all([apiFetch(path + query), state.mapReady]);
+  // Zichtbaar tot de kaart de nieuwe data getekend heeft (idle), niet enkel tot het antwoord binnen is.
+  const loading = document.getElementById("map-loading");
+  const doneLoading = () => {
+    if (mine === loadStopsGeneration) loading.hidden = true;
+  };
+  loading.hidden = false;
+  let data;
+  try {
+    [data] = await Promise.all([apiFetch(path + query), state.mapReady]);
+  } catch (e) {
+    doneLoading();
+    throw e;
+  }
   if (mine !== loadStopsGeneration) return;
   clearMovedMarker();
   state.stopsById.clear();
@@ -593,6 +605,7 @@ async function loadStops() {
   }
   state.map.getSource("areas").setData({ type: "FeatureCollection", features: areas });
   state.map.getSource("stops").setData({ type: "FeatureCollection", features: points });
+  state.map.once("idle", doneLoading);
 }
 
 function onMarkerClick(id) {
