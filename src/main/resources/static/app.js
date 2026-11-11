@@ -605,12 +605,12 @@ async function loadStops() {
   whenStopsDrawn().then(doneLoading);
 }
 
-// Klaar zodra onze twee bronnen hun tegels opnieuw hebben (~0,4 s na setData), niet pas bij "idle": dat
-// wacht ook op OSM-tegels en fades (~2 s extra, gemeten 2026-11-11). Idle blijft het vangnet, bv. als de
-// vlakken op dit zoomniveau geen tegels laden.
+// Klaar zodra de stippen hun tegels opnieuw hebben (~0,4 s na setData), niet pas bij "idle": dat wacht ook
+// op OSM-tegels en fades (~2 s extra, gemeten 2026-11-11). Niet op de vlakken: onder hun minzoom laden die
+// geen tegels (dan kwam pas idle), en erboven zijn ze even snel klaar. Idle blijft het vangnet.
 function whenStopsDrawn() {
   return new Promise((resolve) => {
-    const pending = new Set(["stops", "areas"]);
+    const pending = new Set(["stops"]);
     const finish = () => {
       state.map.off("sourcedata", onData);
       state.map.off("idle", finish);
