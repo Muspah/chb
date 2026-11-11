@@ -109,6 +109,7 @@ const translations = {
 
     "map.attribution": "&copy; OpenStreetMap contributors",
     "map.stopFallbackName": "Stop {id}",
+    "map.keyboardHint": "Every stop on the map can also be opened via the search field.",
     "map.disabledSince": "disabled since {date}",
 
     "toolbar.newNode": "New grouping node",
@@ -353,6 +354,7 @@ const translations = {
 
     "map.attribution": "&copy; OpenStreetMap-auteurs",
     "map.stopFallbackName": "Halte {id}",
+    "map.keyboardHint": "Elke halte op de kaart is ook te openen via het zoekveld.",
     "map.disabledSince": "uitgeschakeld sinds {date}",
 
     "toolbar.newNode": "Groeperingsknoop",
@@ -597,6 +599,7 @@ const translations = {
 
     "map.attribution": "&copy; OpenStreetMap-Mitwirkende",
     "map.stopFallbackName": "Haltestelle {id}",
+    "map.keyboardHint": "Jede Haltestelle auf der Karte lässt sich auch über das Suchfeld öffnen.",
     "map.disabledSince": "deaktiviert seit {date}",
 
     "toolbar.newNode": "Neuer Gruppierungsknoten",
@@ -841,6 +844,7 @@ const translations = {
 
     "map.attribution": "&copy; contributeurs d'OpenStreetMap",
     "map.stopFallbackName": "Arrêt {id}",
+    "map.keyboardHint": "Chaque arrêt de la carte peut aussi être ouvert via le champ de recherche.",
     "map.disabledSince": "désactivé depuis le {date}",
 
     "toolbar.newNode": "Nouveau nœud de regroupement",

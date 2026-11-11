@@ -93,9 +93,11 @@ public class SecurityConfig {
             .addFilterAfter(new CsrfCookieFilter(), BasicAuthenticationFilter.class)
             .addFilterAfter(new MaxSessionAgeFilter(), SecurityContextHolderFilter.class)
             // style-src-attr: de markers en enkele tabelrijen hebben een inline style-attribuut.
+            // MapLibre: start zijn workers vanaf een blob:-URL en haalt de tegels met fetch op (connect-src).
             .headers(headers -> headers.contentSecurityPolicy(csp -> csp.policyDirectives(
                 "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' https://unpkg.com; "
-                    + "style-src-attr 'unsafe-inline'; img-src 'self' data: https://unpkg.com https://*.tile.openstreetmap.org; "
+                    + "style-src-attr 'unsafe-inline'; img-src 'self' data: blob: https://unpkg.com https://tile.openstreetmap.org; "
+                    + "connect-src 'self' https://tile.openstreetmap.org; worker-src blob:; "
                     + "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")))
             .oauth2Login(oauth2 -> oauth2
                 // alwaysUse=true: zonder dit wint Spring Security's RequestCache na login van

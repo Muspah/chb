@@ -325,6 +325,46 @@ button, input, select {
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
+/* Kaarttooltip (hover) en keuzelijst bij overlappende haltes, zie wireMapHover/showStopChoices. */
+.map-tooltip {
+  pointer-events: none;
+}
+
+.map-tooltip .maplibregl-popup-content {
+  padding: 0.3rem 0.55rem;
+  font-size: 0.85rem;
+  box-shadow: var(--shadow-md);
+}
+
+.map-tooltip .maplibregl-popup-tip {
+  display: none;
+}
+
+.map-choices {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0 0;
+}
+
+.map-choices button {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.map-choices button:hover,
+.map-choices button:focus-visible {
+  background: rgba(42, 120, 214, 0.12);
+}
+
 /* Enkel zichtbaar wanneer de "toon uitgeschakelde haltes"-toggle aanstaat (server filtert ze
    anders al helemaal weg) — halftransparant en grijs, duidelijk te onderscheiden van een actieve
    halte zonder de kleurcode van sync 1/2 te hergebruiken. */

@@ -10,9 +10,9 @@ const state = {
   me: { authenticated: false, name: null, email: null },
   stopPlaceTypes: [], // [{code, label}], zie loadStopPlaceTypes()
   stopsById: new Map(), // id -> props uit decodeMapRow
-  markersById: new Map(),
   map: null,
-  markerLayer: null,
+  mapReady: null, // Promise: kaartstijl en modus-iconen geladen, bronnen klaar voor setData
+  movedMarker: null, // versleepbare marker tijdens "Locatie verplaatsen"
   selectedStopId: null,
   lastDetail: null, // laatst gerenderde StopDetail/-history, voor herrenderen bij taalwissel
   lastHistory: null,
@@ -249,7 +249,8 @@ const DETAIL_ZOOM = MAX_ZOOM - 3;
 function parseViewFromHash() {
   // Formaat #zoom/lat/lon — dezelfde conventie als bv. openstreetmap.org, zodat de URL een
   // gewone, deelbare permalink is (build-instruction.md-uitbreiding: positie delen via URL).
-  const match = location.hash.match(/^#(\d+)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/);
+  // Zoom mag decimalen hebben (MapLibre zoomt traploos); oude links met een geheel getal blijven werken.
+  const match = location.hash.match(/^#(\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/);
   if (!match) return null;
   return { zoom: Number(match[1]), lat: Number(match[2]), lon: Number(match[3]) };
 }
@@ -274,7 +275,7 @@ function initialView() {
 function persistView(map) {
   const center = map.getCenter();
   const view = {
-    zoom: map.getZoom(),
+    zoom: urlZoom(map.getZoom()),
     lat: Math.round(center.lat * 100000) / 100000,
     lon: Math.round(center.lng * 100000) / 100000,
   };
@@ -349,59 +350,178 @@ function persistDisabledToggle(value) {
   } catch (e) { /* geen vangnet, verder onschadelijk */ }
 }
 
-function initMap() {
-  const view = initialView();
-  state.map = L.map("map").setView([view.lat, view.lon], view.zoom);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: t("map.attribution"),
-    maxZoom: MAX_ZOOM,
-  }).addTo(state.map);
-  // ~50K haltes: individuele markers groeperen tot bolletjes-met-aantal die opsplitsen naarmate
-  // je inzoomt (chunkedLoading zodat het initieel toevoegen de UI niet blokkeert).
-  //
-  // Bewust GEEN disableClusteringAtZoom (vroeger MAX_ZOOM - 3): dat schakelde clustering op
-  // dat niveau volledig uit, dus ook voor haltes die *exact* op dezelfde coördinaat liggen (bv.
-  // twee gegroepeerde stopplaatsen, of gewoon twee bronfeeds die nog niet samengevoegd zijn).
-  // Zulke markers vielen dan als losse Leaflet-iconen precies over elkaar — enkel de bovenste
-  // (laatst toegevoegde) kon nog aangeklikt worden, de rest was onbereikbaar. In plaats daarvan
-  // blijft de clustergroep overal actief, maar met een `maxClusterRadius` die vanaf DETAIL_ZOOM
-  // instort tot een paar pixels: enkel haltes die (zo goed als) exact overlappen clusteren dan
-  // nog samen, elke andere blijft los zichtbaar zoals voorheen. Een klik op zo'n overlap-cluster
-  // zoomt niet oneindig door (de bounds zijn al minimaal) maar waaiert de markers uiteen
-  // (spiderfy) zodat elke onderliggende halte weer apart aanklikbaar is.
-  state.markerLayer = L.markerClusterGroup({
-    chunkedLoading: true,
-    maxClusterRadius: (zoom) => (zoom >= DETAIL_ZOOM ? 3 : 80),
-    spiderfyOnMaxZoom: true,
-  }).addTo(state.map);
-  // Vlakken van gegroepeerde StopPlaces (onder de quay-stippen); aanklikbaar = de groep selecteren.
-  // Op de kaart staan enkel die in beeld (syncAreaLayer), state.areas houdt ze allemaal.
-  state.areaLayer = L.layerGroup().addTo(state.map);
-  state.areas = [];
-  state.map.on("moveend", syncAreaLayer);
-  state.map.on("moveend", () => persistView(state.map));
-  // Marker-klikken stoppen hun eigen propagatie (Leaflet's standaardgedrag voor interactieve
-  // layers), dus dit vuurt enkel bij een klik op de kaart zelf, niet bij het selecteren van een
-  // halte — geen extra guard nodig.
-  state.map.on("click", () => {
-    if (!document.getElementById("panel").hidden) {
-      closePanel();
-    }
-  });
+// MapLibre (WebGL) i.p.v. Leaflet + markercluster: ~92K punten als DOM-markers kostten ~2 s per herlading
+// en clusters verborgen de haltes op landsniveau. Nu twee GeoJSON-bronnen (punten, vlakken) en een paar
+// lagen; geen clusters. MapLibre-zoom = URL-zoom - 1 (512- i.p.v. 256-pixeltegels), zie mapZoom/urlZoom.
+const STOP_COLOR = "#2a78d6";
+const GROUP_COLOR = "#eb6834"; // curated groepering; een wrapper is visueel gewoon één halte = blauw
+const DISABLED_COLOR = "#8a94a3";
+// Modus-iconen vanaf dit (MapLibre-)zoomniveau, daaronder enkel gekleurde stippen.
+const ICON_MIN_ZOOM = mapZoom(14);
+const EMPTY = { type: "FeatureCollection", features: [] };
+
+function mapZoom(urlZoom) {
+  return urlZoom - 1;
 }
 
-// Vlakken pas vanaf dit zoomniveau: daaronder zijn ze (8 m buffer) hooguit een pixel.
-const AREA_MIN_ZOOM = 14;
+function urlZoom(mapZoomLevel) {
+  return Math.round((mapZoomLevel + 1) * 100) / 100;
+}
 
-// Enkel de vlakken in (of net naast) beeld: alle ~25K als SVG-paden maakten elke pan/zoom ~1 s trager
-// (gemeten 2026-11-11, canvas hielp nauwelijks). Doorlopen van alle bounds kost een paar ms.
-function syncAreaLayer() {
-  state.areaLayer.clearLayers();
-  if (state.map.getZoom() < AREA_MIN_ZOOM) return;
-  const bounds = state.map.getBounds().pad(0.5);
-  for (const area of state.areas) {
-    if (bounds.intersects(area.getBounds())) state.areaLayer.addLayer(area);
+function initMap() {
+  const view = initialView();
+  state.map = new maplibregl.Map({
+    container: "map",
+    center: [view.lon, view.lat],
+    zoom: mapZoom(view.zoom),
+    maxZoom: mapZoom(MAX_ZOOM),
+    dragRotate: false,
+    pitchWithRotate: false,
+    touchPitch: false,
+    style: {
+      version: 8,
+      sources: {
+        osm: {
+          type: "raster",
+          tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+          tileSize: 256,
+          maxzoom: 19,
+          attribution: t("map.attribution"),
+        },
+        areas: { type: "geojson", data: EMPTY },
+        stops: { type: "geojson", data: EMPTY },
+      },
+      layers: [
+        { id: "osm", type: "raster", source: "osm" },
+        // Vlakken van gegroepeerde StopPlaces (onder de quay-stippen); aanklikbaar = de groep selecteren.
+        { id: "area-fill", type: "fill", source: "areas", minzoom: 11, paint: { "fill-color": GROUP_COLOR, "fill-opacity": 0.15 } },
+        { id: "area-line", type: "line", source: "areas", minzoom: 11, paint: { "line-color": GROUP_COLOR, "line-width": 2 } },
+        {
+          id: "stop-dot",
+          type: "circle",
+          source: "stops",
+          paint: {
+            // Klein op landsniveau, op detailniveau zo groot als de vroegere 18px-markers.
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 1.5, 10, 2.5, ICON_MIN_ZOOM - 1, 5, ICON_MIN_ZOOM, 9],
+            "circle-color": ["match", ["get", "k"], "g", GROUP_COLOR, "d", DISABLED_COLOR, STOP_COLOR],
+            "circle-opacity": ["match", ["get", "k"], "d", 0.55, 1],
+            // Witte rand: de stip blijft opvallen op elke ondergrond (beige land, groen park, blauw water).
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 9, 0, 12, 1.5],
+          },
+        },
+        {
+          id: "stop-icon",
+          type: "symbol",
+          source: "stops",
+          minzoom: ICON_MIN_ZOOM,
+          filter: ["has", "icon"],
+          layout: { "icon-image": ["get", "icon"], "icon-allow-overlap": true, "icon-ignore-placement": true },
+        },
+      ],
+    },
+  });
+  state.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
+  state.mapReady = new Promise((resolve) => state.map.once("load", resolve)).then(loadModeIcons);
+  state.map.on("moveend", () => persistView(state.map));
+  state.map.on("click", onMapClick);
+  wireMapHover();
+}
+
+// De modus-iconen (MODE_ICONS, wit) als afbeeldingen voor de stop-icon-laag.
+function loadModeIcons() {
+  const ratio = Math.max(1, Math.round(window.devicePixelRatio || 1));
+  return Promise.all(Object.keys(MODE_ICONS).map((mode) => new Promise((resolve) => {
+    const size = 12 * ratio;
+    const svg = modeIcon(mode, size, 2.5).replace('stroke="currentColor"', 'stroke="#ffffff"')
+      .replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" ');
+    const img = new Image(size, size);
+    img.onload = () => {
+      state.map.addImage("mode-" + mode, img, { pixelRatio: ratio });
+      resolve();
+    };
+    img.onerror = resolve; // geen icoon is geen ramp, de stip blijft
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  })));
+}
+
+// Wat onder de cursor ligt: stippen gaan voor vlakken (een quay ligt in het vlak van zijn groep).
+function stopsAt(point) {
+  const box = [[point.x - 4, point.y - 4], [point.x + 4, point.y + 4]];
+  const dots = state.map.queryRenderedFeatures(box, { layers: ["stop-dot"] });
+  const hits = dots.length ? dots : state.map.queryRenderedFeatures(point, { layers: ["area-fill"] });
+  return [...new Set(hits.map((f) => f.properties.id))];
+}
+
+function onMapClick(e) {
+  const ids = stopsAt(e.point);
+  if (ids.length === 0) {
+    if (!document.getElementById("panel").hidden) closePanel();
+    return;
   }
+  if (ids.length === 1) {
+    onMarkerClick(ids[0]);
+    return;
+  }
+  // Meerdere haltes onder de klik: ver uitgezoomd eerst inzoomen, van dichtbij (exact overlappende
+  // haltes, bv. twee bronfeeds op één paal) een keuzelijstje zodat elke halte bereikbaar blijft.
+  if (state.map.getZoom() < mapZoom(DETAIL_ZOOM)) {
+    state.map.easeTo({ center: e.lngLat, zoom: Math.min(state.map.getZoom() + 2, mapZoom(DETAIL_ZOOM)) });
+    return;
+  }
+  showStopChoices(e.lngLat, ids);
+}
+
+function showStopChoices(lngLat, ids) {
+  const list = document.createElement("ul");
+  list.className = "map-choices";
+  const popup = new maplibregl.Popup({ maxWidth: "320px" }).setLngLat(lngLat).setDOMContent(list);
+  for (const id of ids.slice(0, 20)) {
+    const props = state.stopsById.get(id);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.innerHTML = (props ? modeIcon(props.transportMode, 14, 2) : "") + `<span>${escapeHtml(pickLabel(id))}</span>`;
+    button.addEventListener("click", () => {
+      popup.remove();
+      onMarkerClick(id);
+    });
+    const li = document.createElement("li");
+    li.appendChild(button);
+    list.appendChild(li);
+  }
+  popup.addTo(state.map);
+}
+
+function stopTooltip(props) {
+  if (props.ring) return stopName(props);
+  const label = props.publicCode ? `${stopName(props)} (${props.publicCode})` : stopName(props);
+  return props.disabledAt ? `${label} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}` : label;
+}
+
+function wireMapHover() {
+  const tooltip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: "map-tooltip", offset: 10 });
+  let shown = null;
+  state.map.on("mousemove", (e) => {
+    const ids = stopsAt(e.point);
+    state.map.getCanvas().style.cursor = ids.length ? "pointer" : "";
+    const id = ids.length ? ids[0] : null;
+    if (id === shown) {
+      if (id != null) tooltip.setLngLat(e.lngLat);
+      return;
+    }
+    shown = id;
+    const props = id != null ? state.stopsById.get(id) : null;
+    if (!props) {
+      tooltip.remove();
+      return;
+    }
+    const text = stopTooltip(props) + (ids.length > 1 ? ` (+${ids.length - 1})` : "");
+    tooltip.setLngLat(e.lngLat).setText(text).addTo(state.map);
+  });
+  state.map.getCanvas().addEventListener("mouseleave", () => {
+    shown = null;
+    tooltip.remove();
+  });
 }
 
 // Eén rij uit /api/stops (StopViewerRepository.findMapRows) -> de props die de rest van de kaart gebruikt.
@@ -414,10 +534,6 @@ function decodeMapRow([id, lon, lat, name, publicCode, parentId, transportMode, 
   };
 }
 
-// Categorische kleuren uit het gevalideerde standaardpalet (sloten 1 en 2, gegarandeerd
-// onderscheidbaar bij kleurenblindheid) i.p.v. de vorige laagverzadigde blauw/oker-tint die
-// wegviel tegen de OSM-ondergrond. Een witte rand (i.p.v. een donkerdere tint van dezelfde kleur)
-// zorgt dat de stip blijft opvallen ongeacht wat eronder ligt (beige land, groen park, blauw water).
 function stopName(props) {
   return props.name || t("map.stopFallbackName", { id: props.id });
 }
@@ -430,19 +546,20 @@ function pickLabel(id) {
   return props.isQuay && props.transportMode ? `${stopName(props)} (${props.transportMode})` : stopName(props);
 }
 
-function stopIcon(props) {
-  // Oranje = curated groepering; een wrapper is technisch ook een StopPlace maar visueel gewoon één halte (quay) = blauw.
-  const color = props.isSynthetic && !props.isWrapper && !props.isQuay ? "#eb6834" : "#2a78d6";
-  const className = props.disabledAt ? "stop-marker stop-marker-disabled" : "stop-marker";
-  return L.divIcon({
-    className,
-    html: `<span style="background:${color}">${modeIcon(props.transportMode, 12, 2.5)}</span>`,
-    iconSize: [18, 18],
-    iconAnchor: [9, 9],
-  });
+// Enkel nog voor de versleepbare marker van "Locatie verplaatsen" (zie movedMarker).
+function stopMarkerElement(props) {
+  const color = props.isSynthetic && !props.isWrapper && !props.isQuay ? GROUP_COLOR : STOP_COLOR;
+  const el = document.createElement("div");
+  el.className = props.disabledAt ? "stop-marker stop-marker-disabled" : "stop-marker";
+  el.innerHTML = `<span style="background:${color}">${modeIcon(props.transportMode, 12, 2.5)}</span>`;
+  return el;
 }
 
-// Een trage eerdere aanvraag (snel pannen) mag het nieuwere beeld niet overschrijven (issue #17).
+function ringBounds(ring) {
+  return ring.reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(ring[0], ring[0]));
+}
+
+// Een trage eerdere aanvraag mag het nieuwere beeld niet overschrijven (issue #17).
 let loadStopsGeneration = 0;
 
 async function loadStops() {
@@ -451,61 +568,31 @@ async function loadStops() {
   // valt gewoon terug op de volledige kaart.
   const useUnreviewed = state.showOnlyUnreviewed && state.me.curator;
   const path = useUnreviewed ? "/api/review/unreviewed-map" : "/api/stops";
-  // Altijd de volledige set (~50K, compact): de server cachet hem en de browser hervalideert met de
+  // Altijd de volledige set (~92K, compact): de server cachet hem en de browser hervalideert met de
   // ETag, dus zonder wijziging is dit een 304 zonder body. Pannen en zoomen vragen niets meer op.
   // Server filtert disabled_at IS NOT NULL-haltes standaard al weg (StopViewerRepository) — de
   // toggle vraagt gewoon de ongefilterde set op i.p.v. hier client-side te filteren.
   const query = state.showDisabled ? "?showDisabled=1" : "";
   const mine = ++loadStopsGeneration;
-  const data = await apiFetch(path + query);
+  const [data] = await Promise.all([apiFetch(path + query), state.mapReady]);
   if (mine !== loadStopsGeneration) return;
+  clearMovedMarker();
   state.stopsById.clear();
-  state.markerLayer.clearLayers();
-  state.areas = [];
-  state.markersById.clear();
-  const markers = [];
+  const points = [];
+  const areas = [];
   for (const row of data.stops) {
     const props = decodeMapRow(row);
-    const { lat, lon } = props;
     state.stopsById.set(props.id, props);
     if (props.ring) {
-      const area = L.polygon(
-        props.ring.map(([x, y]) => [y, x]),
-        { color: "#eb6834", weight: 2, fillOpacity: 0.15, bubblingMouseEvents: false },
-      );
-      area.bindTooltip(escapeHtml(stopName(props))); // Leaflet zet een string als innerHTML
-      area.on("click", () => onMarkerClick(props.id));
-      state.areas.push(area);
-      state.markersById.set(props.id, area);
+      areas.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [props.ring] }, properties: { id: props.id } });
       continue;
     }
-    const marker = L.marker([lat, lon], { icon: stopIcon(props), draggable: false }); // pas versleepbaar na "Locatie verplaatsen" in het paneel
-    if (state.me.curator) {
-      marker.on("dragend", async () => {
-        const { lat: newLat, lng: newLon } = marker.getLatLng();
-        try {
-          await apiFetch("/api/stops/" + props.id + "/location", {
-            method: "POST",
-            body: JSON.stringify({ lat: newLat, lon: newLon }),
-          });
-          if (state.lastDetail && state.lastDetail.id === props.id) await selectStop(props.id);
-        } catch (e) {
-          showError(e);
-        }
-        await loadStops(); // bij een fout springt de marker terug, bij succes staat hij op de nieuwe plek
-      });
-    }
-    const label = props.publicCode ? `${stopName(props)} (${props.publicCode})` : stopName(props);
-    const tooltip = props.disabledAt
-      ? `${label} — ${t("map.disabledSince", { date: formatTimestamp(props.disabledAt) })}`
-      : label;
-    marker.bindTooltip(escapeHtml(tooltip));
-    marker.on("click", () => onMarkerClick(props.id));
-    markers.push(marker);
-    state.markersById.set(props.id, marker);
+    const p = { id: props.id, k: props.disabledAt ? "d" : props.isSynthetic ? "g" : "s" };
+    if (MODE_ICONS[props.transportMode]) p.icon = "mode-" + props.transportMode;
+    points.push({ type: "Feature", geometry: { type: "Point", coordinates: [props.lon, props.lat] }, properties: p });
   }
-  state.markerLayer.addLayers(markers); // bulk toevoegen i.p.v. één voor één, veel sneller op 50K
-  syncAreaLayer();
+  state.map.getSource("areas").setData({ type: "FeatureCollection", features: areas });
+  state.map.getSource("stops").setData({ type: "FeatureCollection", features: points });
 }
 
 function onMarkerClick(id) {
@@ -526,21 +613,42 @@ function onMarkerClick(id) {
   selectStop(id);
 }
 
-// Geeft terug of er een lokale marker was om naartoe te pannen. Niet elke halte heeft er een (bv. een
+// Geeft terug of de halte op de kaart staat om naartoe te gaan. Niet elke halte staat erop (bv. een
 // kind van een parent met coördinaten, of een uitgeschakelde zonder toggle), zie de fallback in selectStop.
 function panTo(id) {
-  const marker = state.markersById.get(id);
-  if (marker && marker.getBounds) { // vlak van een groep: er is geen marker om uit een cluster te halen
-    state.map.fitBounds(marker.getBounds(), { maxZoom: MAX_ZOOM - 1 });
-    return true;
+  const props = state.stopsById.get(id);
+  if (!props) return false;
+  if (props.ring) {
+    state.map.fitBounds(ringBounds(props.ring), { maxZoom: mapZoom(MAX_ZOOM - 1), padding: 60 });
+  } else {
+    state.map.easeTo({ center: [props.lon, props.lat], zoom: Math.max(state.map.getZoom(), mapZoom(DETAIL_ZOOM)) });
   }
-  if (marker) {
-    // zoomToShowLayer zoomt/pant net ver genoeg in tot de marker niet meer in een cluster
-    // opgeslorpt zit, i.p.v. enkel pannen naar een punt dat dan nog steeds onzichtbaar is.
-    state.markerLayer.zoomToShowLayer(marker, () => {});
-    return true;
-  }
-  return false;
+  return true;
+}
+
+// "Locatie verplaatsen": één versleepbare DOM-marker bovenop de stip, weg bij de volgende loadStops.
+function clearMovedMarker() {
+  if (state.movedMarker) state.movedMarker.remove();
+  state.movedMarker = null;
+}
+
+function startMoveMarker(props, onStarted) {
+  clearMovedMarker();
+  const marker = new maplibregl.Marker({ element: stopMarkerElement(props), draggable: true })
+    .setLngLat([props.lon, props.lat]).addTo(state.map);
+  marker.on("dragend", async () => {
+    const { lat, lng } = marker.getLngLat();
+    try {
+      await apiFetch("/api/stops/" + props.id + "/location", { method: "POST", body: JSON.stringify({ lat, lon: lng }) });
+      if (state.lastDetail && state.lastDetail.id === props.id) await selectStop(props.id);
+    } catch (e) {
+      showError(e);
+    }
+    await loadStops(); // bij een fout staat de stip nog op de oude plek, bij succes op de nieuwe
+  });
+  state.movedMarker = marker;
+  state.map.easeTo({ center: [props.lon, props.lat], zoom: Math.max(state.map.getZoom(), mapZoom(DETAIL_ZOOM)) });
+  onStarted();
 }
 
 // --- Zoeken ---------------------------------------------------------------
@@ -610,9 +718,8 @@ async function selectStop(id) {
     : Promise.resolve(null);
   const detail = await apiFetch("/api/stops/" + id);
   if (!wasVisible && detail.lat != null && detail.lon != null) {
-    // Geen lokale marker om naartoe te zoomen (niet op de kaart, zie panTo) — pan rechtstreeks
-    // op de net opgehaalde coördinaten.
-    state.map.setView([detail.lat, detail.lon], Math.max(state.map.getZoom(), DETAIL_ZOOM));
+    // Niet op de kaart (zie panTo) — pan rechtstreeks op de net opgehaalde coördinaten.
+    state.map.easeTo({ center: [detail.lon, detail.lat], zoom: Math.max(state.map.getZoom(), mapZoom(DETAIL_ZOOM)) });
   }
   const history = await historyPromise;
   // Bewaard zodat een taalwissel het paneel kan herrenderen zonder opnieuw te bevragen — zie
@@ -927,10 +1034,9 @@ function wirePanelActions(detail) {
   const moveBtn = document.getElementById("move-location-btn");
   if (moveBtn) {
     moveBtn.addEventListener("click", () => {
-      const marker = state.markersById.get(detail.id);
-      if (!marker || !marker.dragging) return alert(t("panel.moveNoMarker"));
-      state.markerLayer.zoomToShowLayer(marker, () => {
-        marker.dragging.enable();
+      const props = state.stopsById.get(detail.id);
+      if (!props || props.ring) return alert(t("panel.moveNoMarker"));
+      startMoveMarker(props, () => {
         moveBtn.disabled = true;
         moveBtn.textContent = t("panel.moveActive");
       });
