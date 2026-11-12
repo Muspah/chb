@@ -441,10 +441,19 @@ function initMap() {
   state.mapReady = new Promise((resolve) => state.map.once("load", resolve)).then(loadModeIcons);
   // Raster-OSM-tegels zijn enkel scherp op gehele zoomniveaus; MapLibre zoomt traploos, dus na elke
   // zoom (wiel, knijpen, fitBounds) terugveren naar het dichtstbijzijnde gehele niveau (à la Leaflets zoomSnap).
-  state.map.on("zoomend", () => {
-    const zoom = state.map.getZoom();
-    const snapped = Math.round(zoom);
-    if (Math.abs(zoom - snapped) > 0.01) state.map.easeTo({ zoom: snapped, duration: 150 });
+  // Uitgesteld en enkel als de kaart stilstaat: een terugveer-animatie die door scrollen onderbroken wordt,
+  // mag niet meteen een nieuwe starten (dat vocht met de wiel-handler en bevroor de kaart).
+  let snapTimer;
+  state.map.on("zoomend", (e) => {
+    clearTimeout(snapTimer);
+    if (e.snap) return;
+    snapTimer = setTimeout(() => {
+      const zoom = state.map.getZoom();
+      const snapped = Math.round(zoom);
+      if (!state.map.isMoving() && Math.abs(zoom - snapped) > 0.01) {
+        state.map.easeTo({ zoom: snapped, duration: 150 }, { snap: true });
+      }
+    }, 250);
   });
   state.map.on("moveend", () => persistView(state.map));
   state.map.on("click", onMapClick);
