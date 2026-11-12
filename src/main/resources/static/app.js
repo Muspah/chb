@@ -610,6 +610,8 @@ async function loadStops({ quiet = false } = {}) {
 
 // Kaders groter dan dit (graden) ververst de server niet apart (MAX_BBOX_DEGREES), dan toch alles.
 const MAX_REFRESH_DEGREES = 0.45;
+// Minimale marge (meter) rond het kaartbeeld bij die gedeeltelijke verversing.
+const REFRESH_MARGIN_M = 1000;
 // Na een curatoractie volgt na deze stilte nog een volledige herlading, voor wat buiten beeld veranderde.
 const FULL_REFRESH_DELAY_MS = 15000;
 let fullRefreshTimer = null;
@@ -624,8 +626,11 @@ async function refreshAfterEdit() {
   // selectStop pant net vóór deze aanroep vaak nog naar de halte: het kader van het eindbeeld nemen.
   if (state.map.isMoving()) await new Promise((resolve) => state.map.once("moveend", resolve));
   const view = state.map.getBounds();
-  const padLon = (view.getEast() - view.getWest()) * 0.1;
-  const padLat = (view.getNorth() - view.getSouth()) * 0.1;
+  // Marge rond het beeld: 10 % of minstens REFRESH_MARGIN_M, zodat wat net buiten beeld ligt ook mee ververst.
+  const marginLat = REFRESH_MARGIN_M / 111320;
+  const marginLon = marginLat / Math.cos((view.getCenter().lat * Math.PI) / 180);
+  const padLon = Math.max((view.getEast() - view.getWest()) * 0.1, marginLon);
+  const padLat = Math.max((view.getNorth() - view.getSouth()) * 0.1, marginLat);
   const box = {
     minLon: view.getWest() - padLon, minLat: view.getSouth() - padLat,
     maxLon: view.getEast() + padLon, maxLat: view.getNorth() + padLat,
