@@ -21,8 +21,9 @@ import java.util.stream.Collectors;
 /**
  * Namen per taal uit {@code chb.quay_names} / {@code chb.stop_names} (ndov V132/V137), in het geheugen.
  * Eén volledige lezing kost 5-9 s en filteren op id versnelt {@code stop_names} niet (gematerialiseerde CTE's),
- * dus per request lezen kan niet. Ververst elke 5 minuten (import) en kort na elke curator-schrijfactie
- * ({@link #refreshSoon()}). Quay- en StopPlace-id's zijn disjunct, dus één lookup per id volstaat.
+ * dus per request lezen kan niet. Kijkt elke 5 minuten of de onderliggende tabellen veranderd zijn (import) en
+ * ververst dan pas; kort na elke curator-schrijfactie altijd ({@link #refreshSoon()}). Quay- en StopPlace-id's
+ * zijn disjunct, dus één lookup per id volstaat.
  * Zolang de cache leeg is (opstart, of de views ontbreken) valt alles terug op de kale naam.
  */
 @Component
@@ -42,6 +43,14 @@ public class StopNameCache {
         FROM %s
         """;
 
+    // Goedkoop wijzigingssignaal (chb#27): de tabellen waar beide views van afhangen (pg_depend). Elk verschil,
+    // ook een stats-reset of herstart, geeft een verversing.
+    private static final String CHANGES_SQL = """
+        SELECT sum(n_tup_ins + n_tup_upd + n_tup_del) FROM pg_stat_user_tables
+        WHERE relid IN ('chb.stop'::regclass, 'chb.quay'::regclass, 'chb.stop_attribute'::regclass,
+                        'chb.quay_attribute'::regclass, 'chb.raw_stop'::regclass)
+        """;
+
     private final JdbcTemplate jdbcTemplate;
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "stop-name-cache");
@@ -53,10 +62,12 @@ public class StopNameCache {
     private volatile Map<Long, Names> quays = Map.of();
     // Telt elke wijziging van de namen; StopMapCache bouwt de kaart opnieuw op als hij verspringt.
     private final AtomicLong version = new AtomicLong();
+    // Signaal bij de laatste geslaagde verversing; alleen op de executor-thread gebruikt.
+    private Long loadedChanges;
 
     public StopNameCache(JdbcTemplate viewerJdbcTemplate) {
         this.jdbcTemplate = viewerJdbcTemplate;
-        executor.scheduleWithFixedDelay(this::refresh, 0, 5, TimeUnit.MINUTES);
+        executor.scheduleWithFixedDelay(this::refreshIfChanged, 0, 5, TimeUnit.MINUTES);
     }
 
     /** Na een curator-wijziging: één extra verversing, samengevoegd als er al één wacht. */
@@ -100,16 +111,37 @@ public class StopNameCache {
         return copy;
     }
 
+    private void refreshIfChanged() {
+        Long changes = changes();
+        if (changes == null || !changes.equals(loadedChanges)) {
+            refresh(changes);
+        }
+    }
+
     private void refresh() {
+        refresh(changes());
+    }
+
+    /** {@code changes} vóór het laden gelezen: wat tijdens het laden wijzigt, pakt de volgende tik op. */
+    private void refresh(Long changes) {
         try {
             long start = System.nanoTime();
             quays = load("quay_id", "chb.quay_names", "NULL::text[]");
             stops = load("stop_id", "chb.stop_names", "disagree_langs");
             version.incrementAndGet();
+            loadedChanges = changes;
             log.info("Namencache ververst: {} StopPlaces, {} quays in {} ms", stops.size(), quays.size(),
                 (System.nanoTime() - start) / 1_000_000);
         } catch (RuntimeException e) {
             log.warn("Namencache niet ververst, de vorige (of de kale naam) blijft gelden: {}", e.getMessage());
+        }
+    }
+
+    private Long changes() {
+        try {
+            return jdbcTemplate.queryForObject(CHANGES_SQL, Long.class);
+        } catch (RuntimeException e) {
+            return null; // geen signaal: gewoon verversen
         }
     }
 
