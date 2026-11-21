@@ -23,7 +23,7 @@ const state = {
   group: { active: false, pickedIds: [] },
   showOnlyUnreviewed: false, // "Kaart: enkel nog te bekijken"-toggle
   showDisabled: false, // "Toon uitgeschakelde haltes"-toggle
-  reviewCounts: { modeMismatches: 0, duplicateQuays: 0 }, // tellers op de rapportenknop
+  reviewCounts: { modeMismatches: 0, duplicateQuays: 0, uicConflicts: 0 }, // tellers op de rapportenknop
 };
 
 function getCookie(name) {
@@ -980,6 +980,8 @@ function renderPanel(detail, history) {
   const sourcesLine = detail.sources.length
     ? detail.sources.map((s) => escapeHtml(`${s.sourceSchema}:${s.sourceId} (${s.sourceName})`)).join(", ")
     : t("panel.syntheticNoSource");
+  // chb#29: een treinstation hoort precies één UIC te hebben (ndov V185).
+  const uics = [...new Set(detail.sources.map((s) => s.uic).filter(Boolean))].sort();
 
   const duplicates = duplicateQuaysAmong(detail.children);
   const childrenSection = detail.children.length ? `
@@ -992,6 +994,7 @@ function renderPanel(detail, history) {
             <td>${escapeHtml(c.displayName)}${c.isQuay ? ` <span class="badge badge-physical">${escapeHtml(t("panel.quayBadge"))}</span>` : kindBadge(c.kind)}${c.disabledAt ? ` <span class="badge badge-disabled">${escapeHtml(t("panel.disabledBadge"))}</span>` : ""}${duplicateBadge(c, duplicates.get(c.id))}</td>
             <td>${escapeHtml(c.publicCode || "")}</td>
             <td class="hint-text">${escapeHtml(modesText(c))}</td>
+            <td class="hint-text" title="${escapeHtml(t("panel.feeds"))}">${escapeHtml(c.sourceSchemas.join(", "))}</td>
           </tr>`).join("")}
       </tbody></table>
     </section>` : "";
@@ -1058,6 +1061,7 @@ function renderPanel(detail, history) {
       <dt>${escapeHtml(t("panel.transportMode"))}</dt><dd>${escapeHtml(modesText(detail))}</dd>
       <dt>${escapeHtml(t("panel.publicCode"))}</dt><dd>${escapeHtml(detail.publicCode || "-")}</dd>
       <dt>${escapeHtml(t("panel.origin"))}</dt><dd>${sourcesLine}</dd>
+      ${uics.length ? `<dt>${escapeHtml(t("panel.uic"))}</dt><dd${uics.length > 1 ? ' class="error-text"' : ""}>${escapeHtml(uics.join(", "))}</dd>` : ""}
       ${detail.sourceStation ? `<dt>${escapeHtml(t("panel.sourceStation"))}</dt><dd>${escapeHtml(detail.sourceStation)}</dd>` : ""}
       ${detail.firstSeenAt ? `<dt>${escapeHtml(t("panel.firstSeen"))}</dt><dd>${escapeHtml(formatTimestamp(detail.firstSeenAt))}</dd>` : ""}
       ${detail.lastSeenAt ? `<dt>${escapeHtml(t("panel.lastSeen"))}</dt><dd>${escapeHtml(formatTimestamp(detail.lastSeenAt))}</dd>` : ""}
@@ -1876,6 +1880,7 @@ function wireReport() {
   document.getElementById("btn-brussels-names").addEventListener("click", openBrusselsNamesDialog);
   document.getElementById("btn-duplicate-quays").addEventListener("click", openDuplicateQuaysDialog);
   document.getElementById("btn-group-candidates").addEventListener("click", openGroupCandidatesDialog);
+  document.getElementById("btn-rail-uic").addEventListener("click", openRailUicDialog);
   // Dicht bij een klik op een rapport of ernaast, en met Escape.
   const menu = document.getElementById("reports-menu");
   document.addEventListener("click", (event) => {
@@ -2328,6 +2333,7 @@ async function openGroupCandidatesDialog() {
 function refreshReviewCounts() {
   refreshModeMismatches().catch(console.error);
   refreshDuplicateQuays().catch(console.error);
+  refreshUicConflicts().catch(console.error);
 }
 
 async function refreshModeMismatches() {
@@ -2344,9 +2350,16 @@ async function refreshDuplicateQuays() {
   return rows;
 }
 
+async function refreshUicConflicts() {
+  const rows = await apiFetch("/api/review/uic-conflicts");
+  state.reviewCounts.uicConflicts = rows.length;
+  renderReviewCounts();
+  return rows;
+}
+
 function renderReviewCounts() {
   const counts = state.reviewCounts;
-  const total = counts.modeMismatches + counts.duplicateQuays;
+  const total = counts.modeMismatches + counts.duplicateQuays + counts.uicConflicts;
   for (const badge of document.querySelectorAll(".review-count")) {
     const n = badge.dataset.count === "total" ? total : counts[badge.dataset.count];
     badge.textContent = n;
@@ -2357,6 +2370,7 @@ function renderReviewCounts() {
   const parts = [];
   if (counts.modeMismatches) parts.push(t("modeMismatches.count", { n: counts.modeMismatches }));
   if (counts.duplicateQuays) parts.push(t("duplicateQuays.count", { n: counts.duplicateQuays }));
+  if (counts.uicConflicts) parts.push(t("railUic.count", { n: counts.uicConflicts }));
   const label = parts.length ? `${reports} (${parts.join(", ")})` : reports;
   const summary = document.querySelector("#reports-menu summary");
   summary.setAttribute("aria-label", label);
@@ -2423,6 +2437,50 @@ async function openDuplicateQuaysDialog() {
       selectStop(row.stopId);
     });
     list.appendChild(li);
+  }
+}
+
+// chb#29, ndov V185: één UIC = één rail-StopPlace. Conflicten horen leeg te zijn; de werklijst is curatorwerk.
+async function openRailUicDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.railUic"))} ${helpLink("merge")}</h2>
+    <p class="hint-text">${escapeHtml(t("railUic.hint"))}</p>
+    <h3>${escapeHtml(t("railUic.conflictsHeading"))}</h3>
+    <ul id="uic-conflicts"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <h3 id="uic-worklist-heading"></h3>
+    <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="rail-uic-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("rail-uic-close").addEventListener("click", closeDialog);
+  const [conflicts, worklist] = await Promise.all([refreshUicConflicts(), apiFetch("/api/review/rail-uic-worklist")]);
+  const conflictList = document.getElementById("uic-conflicts");
+  const list = document.getElementById("names-list");
+  if (!conflictList || !list) {
+    return;
+  }
+  const item = (text, sub, id) => {
+    const li = document.createElement("li");
+    li.className = "report-item";
+    li.innerHTML = `${escapeHtml(text)}<div class="report-item-sub">${escapeHtml(sub)}</div>`;
+    li.addEventListener("click", () => {
+      closeDialog();
+      selectStop(id);
+    });
+    return li;
+  };
+  conflictList.innerHTML = conflicts.length ? "" : `<li class="report-item">${escapeHtml(t("railUic.noConflicts"))}</li>`;
+  for (const c of conflicts) {
+    conflictList.appendChild(item(`UIC ${c.uic}: ${t("railUic.conflict." + c.kind)}`,
+      t("railUic.conflictRow", { stops: c.stopPlaceIds.join(", "), quays: c.quayIds.join(", ") }), c.stopPlaceIds[0]));
+  }
+  document.getElementById("uic-worklist-heading").textContent = t("railUic.worklistHeading", { n: worklist.length });
+  list.innerHTML = worklist.length ? "" : `<li class="report-item">${escapeHtml(t("railUic.worklistNone"))}</li>`;
+  for (const w of worklist) {
+    const target = w.suggestedStopPlaceId ? t("railUic.suggested", { id: w.suggestedStopPlaceId }) : t("railUic.noTarget");
+    list.appendChild(item(w.name, t("railUic.row", { uic: w.uic, n: w.quayIds.length, target }),
+      w.suggestedStopPlaceId ?? w.wrapperIds[0]));
   }
 }
 

@@ -9,6 +9,7 @@ import be.gtfsbe.chb.dto.ModeMismatch;
 import be.gtfsbe.chb.dto.MultimodeQuay;
 import be.gtfsbe.chb.dto.NameIssue;
 import be.gtfsbe.chb.dto.ReviewMismatch;
+import be.gtfsbe.chb.dto.RailUicWorklistItem;
 import be.gtfsbe.chb.dto.ReviewStats;
 import be.gtfsbe.chb.dto.StopChildSummary;
 import be.gtfsbe.chb.dto.StopDetail;
@@ -17,6 +18,7 @@ import be.gtfsbe.chb.dto.StopPlaceTypeOption;
 import be.gtfsbe.chb.dto.StopSearchResult;
 import be.gtfsbe.chb.dto.StopSource;
 import be.gtfsbe.chb.dto.TecCityIssue;
+import be.gtfsbe.chb.dto.UicConflict;
 import be.gtfsbe.chb.dto.UnreviewedStop;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -245,7 +247,7 @@ public class StopViewerRepository {
         SELECT s.id, s.name, s.stop_type, s.public_code, s.lat, s.lon, s.parent_id, s.is_synthetic, s.is_wrapper, s.disabled_at,
                ARRAY[g.id, s.id] AS path_ids, ARRAY[g.name, s.name] AS path_names,
                CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes,
-               ARRAY[]::text[] AS source_stop_codes
+               ARRAY[]::text[] AS source_stop_codes, ARRAY[]::text[] AS source_schemas
         FROM chb.stop s LEFT JOIN chb.stop g ON g.id = s.parent_id
         WHERE s.id = ?
         """;
@@ -269,13 +271,14 @@ public class StopViewerRepository {
     private static final String CHILDREN_SQL = """
         SELECT s.id, s.name, s.public_code, s.disabled_at, false AS is_quay,
                CASE WHEN s.is_wrapper THEN 'wrapper' ELSE s.kind END AS kind, s.transport_mode, s.other_transport_modes,
-               ARRAY[]::text[] AS source_stop_codes
+               ARRAY[]::text[] AS source_stop_codes, ARRAY[]::text[] AS source_schemas
         FROM chb.stop s
         WHERE s.parent_id = ? AND s.merged_into_id IS NULL
         AND NOT EXISTS (SELECT 1 FROM chb.stop_attribute a WHERE a.stop_id = s.id AND a.key = ?)
         UNION ALL
         SELECT q.id, q.name, q.public_code, q.disabled_at, true, NULL::text, q.transport_mode, q.other_transport_modes,
-               ARRAY(SELECT DISTINCT r.source_stop_code FROM chb.raw_stop r WHERE r.stop_id = q.id AND r.source_stop_code IS NOT NULL)
+               ARRAY(SELECT DISTINCT r.source_stop_code FROM chb.raw_stop r WHERE r.stop_id = q.id AND r.source_stop_code IS NOT NULL),
+               ARRAY(SELECT DISTINCT r.source_schema FROM chb.raw_stop r WHERE r.stop_id = q.id ORDER BY 1)
         FROM chb.quay q
         WHERE q.stop_id = ? AND q.merged_into_id IS NULL
         ORDER BY 2
@@ -295,8 +298,13 @@ public class StopViewerRepository {
                 : "SELECT key, value FROM chb.stop_attribute WHERE stop_id = ? ORDER BY key")
             // Bewust niet via view chb.stop_sources: het ORDER BY daarin blokkeert predicate pushdown
             // (sorteert alle ~130K raw_stop-rijen: ~570 ms per call i.p.v. <1 ms).
-            + ";SELECT rs.source_schema, rs.source_id, rs.name AS source_name, rs.source_stop_code FROM chb.quay q"
-            + " JOIN chb.raw_stop rs ON rs.stop_id = q.id WHERE q.merged_into_id IS NULL AND q."
+            // uic: zelfde regel als chb.rail_uic_quay (ndov V185), hier inline zodat het paneel niet van die view afhangt.
+            + ";SELECT rs.source_schema, rs.source_id, rs.name AS source_name, rs.source_stop_code,"
+            + " CASE WHEN q.transport_mode IS NULL OR q.transport_mode = 'rail' THEN u.uic END AS uic FROM chb.quay q"
+            + " JOIN chb.raw_stop rs ON rs.stop_id = q.id"
+            + " LEFT JOIN LATERAL (SELECT c AS uic FROM chb.uic_code_from_raw_stop(rs.source_schema, rs.source_id, rs.source_stop_code) c"
+            + " WHERE c ~ '^\\d{7}$') u ON true"
+            + " WHERE q.merged_into_id IS NULL AND q."
             + (quay ? "id" : "stop_id") + " = ? ORDER BY q.name, rs.source_schema"
             + (quay ? "" : ";" + CHILDREN_SQL);
         Object[] params = quay
@@ -362,7 +370,7 @@ public class StopViewerRepository {
         ResultSet srcRs = ps.getResultSet();
         while (srcRs.next()) {
             sources.add(new StopSource(srcRs.getString("source_schema"), srcRs.getString("source_id"), srcRs.getString("source_name"),
-                srcRs.getString("source_stop_code")));
+                srcRs.getString("source_stop_code"), srcRs.getString("uic")));
         }
 
         List<StopChildSummary> children = new ArrayList<>();
@@ -375,7 +383,8 @@ public class StopViewerRepository {
                 children.add(new StopChildSummary(childId, childName, names.display(childId, lang, childName),
                     childRs.getString("public_code"), childRs.getObject("disabled_at", OffsetDateTime.class),
                     childRs.getBoolean("is_quay"), childRs.getString("kind"), childRs.getString("transport_mode"),
-                    textArray(childRs, "other_transport_modes"), textArray(childRs, "source_stop_codes")));
+                    textArray(childRs, "other_transport_modes"), textArray(childRs, "source_stop_codes"),
+                    textArray(childRs, "source_schemas")));
             }
         }
         StopNameCache.Names n = names.get(rowId);
@@ -715,6 +724,41 @@ public class StopViewerRepository {
             """;
         return jdbcTemplate.query(sql, (rs, rowNum) -> new DuplicateQuay(rs.getLong("quay_id"), rs.getLong("keep_id"),
             rs.getLong("stop_id"), rs.getString("name"), rs.getString("source_stop_code")));
+    }
+
+    /**
+     * chb.rail_uic_worklist (ndov V185, chb#29) per UIC: rail-quays die nog in een wrapper staan. Zelfde uitkomst als
+     * die view, maar uit één gematerialiseerde chb.rail_uic_quay: de LATERAL in de view leest die per rij opnieuw
+     * (~15 s op prod i.p.v. ~75 ms).
+     */
+    public List<RailUicWorklistItem> findRailUicWorklist() {
+        String sql = """
+            WITH r AS MATERIALIZED (SELECT * FROM chb.rail_uic_quay)
+            SELECT * FROM (
+                SELECT w.uic, min(q.name) AS name, array_agg(DISTINCT w.quay_id ORDER BY w.quay_id) AS quay_ids,
+                       array_agg(DISTINCT w.stop_place_id ORDER BY w.stop_place_id) AS wrapper_ids,
+                       (SELECT min(t.stop_place_id) FROM r t WHERE t.uic = w.uic AND NOT t.is_wrapper) AS suggested
+                FROM r w JOIN chb.quay q ON q.id = w.quay_id
+                WHERE w.is_wrapper
+                GROUP BY w.uic) x
+            ORDER BY suggested IS NULL, cardinality(quay_ids) DESC, name
+            """;
+        return jdbcTemplate.query(sql, (rs, rowNum) -> {
+            long suggested = rs.getLong("suggested");
+            return new RailUicWorklistItem(rs.getString("uic"), rs.getString("name"), longArray(rs, "quay_ids"),
+                longArray(rs, "wrapper_ids"), rs.wasNull() ? null : suggested);
+        });
+    }
+
+    /** chb.uic_stop_place_conflict (ndov V185, chb#29): hoort leeg te zijn. */
+    public List<UicConflict> findUicConflicts() {
+        return jdbcTemplate.query("SELECT kind, uic, stop_place_ids, quay_ids FROM chb.uic_stop_place_conflict ORDER BY uic, kind",
+            (rs, rowNum) -> new UicConflict(rs.getString("kind"), rs.getString("uic"), longArray(rs, "stop_place_ids"),
+                longArray(rs, "quay_ids")));
+    }
+
+    private static List<Long> longArray(ResultSet rs, String column) throws SQLException {
+        return List.of((Long[]) rs.getArray(column).getArray());
     }
 
     /**

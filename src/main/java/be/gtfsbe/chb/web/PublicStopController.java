@@ -4,6 +4,8 @@ import be.gtfsbe.chb.dto.BrusselsNames;
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.DuplicateQuay;
+import be.gtfsbe.chb.dto.RailUicWorklistItem;
+import be.gtfsbe.chb.dto.UicConflict;
 import be.gtfsbe.chb.dto.ModeMismatch;
 import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.MultimodeQuay;
@@ -165,6 +167,16 @@ public class PublicStopController {
     @GetMapping("/api/review/duplicate-quays")
     public List<DuplicateQuay> duplicateQuays() {
         return repository.findDuplicateQuays();
+    }
+
+    @GetMapping("/api/review/rail-uic-worklist")
+    public List<RailUicWorklistItem> railUicWorklist() {
+        return repository.findRailUicWorklist();
+    }
+
+    @GetMapping("/api/review/uic-conflicts")
+    public List<UicConflict> uicConflicts() {
+        return repository.findUicConflicts();
     }
 
     @GetMapping("/api/review/feeds")
