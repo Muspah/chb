@@ -726,21 +726,15 @@ public class StopViewerRepository {
             rs.getLong("stop_id"), rs.getString("name"), rs.getString("source_stop_code")));
     }
 
-    /**
-     * chb.rail_uic_worklist (ndov V185, chb#29) per UIC: rail-quays die nog in een wrapper staan. Zelfde uitkomst als
-     * die view, maar uit één gematerialiseerde chb.rail_uic_quay: de LATERAL in de view leest die per rij opnieuw
-     * (~15 s op prod i.p.v. ~75 ms).
-     */
+    /** chb.rail_uic_worklist (ndov V185/V187, chb#29, chb#30) per UIC: rail-quays die nog in een wrapper staan. */
     public List<RailUicWorklistItem> findRailUicWorklist() {
         String sql = """
-            WITH r AS MATERIALIZED (SELECT * FROM chb.rail_uic_quay)
             SELECT * FROM (
-                SELECT w.uic, min(q.name) AS name, array_agg(DISTINCT w.quay_id ORDER BY w.quay_id) AS quay_ids,
-                       array_agg(DISTINCT w.stop_place_id ORDER BY w.stop_place_id) AS wrapper_ids,
-                       (SELECT min(t.stop_place_id) FROM r t WHERE t.uic = w.uic AND NOT t.is_wrapper) AS suggested
-                FROM r w JOIN chb.quay q ON q.id = w.quay_id
-                WHERE w.is_wrapper
-                GROUP BY w.uic) x
+                SELECT uic, min(name) AS name, array_agg(DISTINCT quay_id ORDER BY quay_id) AS quay_ids,
+                       array_agg(DISTINCT wrapper_id ORDER BY wrapper_id) AS wrapper_ids,
+                       min(suggested_stop_place_id) AS suggested
+                FROM chb.rail_uic_worklist
+                GROUP BY uic) x
             ORDER BY suggested IS NULL, cardinality(quay_ids) DESC, name
             """;
         return jdbcTemplate.query(sql, (rs, rowNum) -> {
