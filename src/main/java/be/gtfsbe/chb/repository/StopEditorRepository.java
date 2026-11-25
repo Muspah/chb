@@ -142,7 +142,7 @@ public class StopEditorRepository {
                 Boolean.class, id))) {
             return;  // zonder live kinderen slaat de export hem over
         }
-        // ponytail: hier wel de volledige view (~6 s), alleen buiten nl/fr/de; namen-overeenkomst niet dupliceren.
+        // Per id in ms sinds ndov V194 (#185); de namen-overeenkomst blijft daardoor op één plek.
         Map<String, Object> n = jdbc.queryForMap(
             "SELECT name_reason, default_name FROM chb.stop_names WHERE stop_id = ?", id);
         String reason = (String) n.get("name_reason");
