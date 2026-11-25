@@ -3,6 +3,10 @@ package be.gtfsbe.chb.repository;
 import be.gtfsbe.chb.dto.BrusselsNames;
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.DuplicateQuay;
+import be.gtfsbe.chb.dto.IdentifierConflict;
+import be.gtfsbe.chb.dto.IdentifierScheme;
+import be.gtfsbe.chb.dto.IdentifierWorklistItem;
+import be.gtfsbe.chb.dto.StopIdentifier;
 import be.gtfsbe.chb.dto.MapBounds;
 import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.ModeMismatch;
@@ -306,10 +310,12 @@ public class StopViewerRepository {
             + " WHERE c ~ '^\\d{7}$') u ON true"
             + " WHERE q.merged_into_id IS NULL AND q."
             + (quay ? "id" : "stop_id") + " = ? ORDER BY q.name, rs.source_schema"
+            + ";SELECT identifier_id, scheme, value, origin, note, created_at FROM chb.identifier_resolved WHERE "
+            + (quay ? "quay_id" : "stop_id") + " = ? ORDER BY scheme, value, origin"
             + (quay ? "" : ";" + CHILDREN_SQL);
         Object[] params = quay
-            ? new Object[] {id, id, id, id}
-            : new Object[] {id, id, id, id, id, DELETED_ATTRIBUTE_KEY, id};
+            ? new Object[] {id, id, id, id, id}
+            : new Object[] {id, id, id, id, id, id, DELETED_ATTRIBUTE_KEY, id};
         return jdbcTemplate.execute((java.sql.Connection con) -> {
             try (java.sql.PreparedStatement ps = con.prepareStatement(sql)) {
                 for (int i = 0; i < params.length; i++) {
@@ -373,6 +379,15 @@ public class StopViewerRepository {
                 srcRs.getString("source_stop_code"), srcRs.getString("uic")));
         }
 
+        ps.getMoreResults();
+        List<StopIdentifier> identifiers = new ArrayList<>();
+        ResultSet idRs = ps.getResultSet();
+        while (idRs.next()) {
+            long identifierId = idRs.getLong("identifier_id");
+            identifiers.add(new StopIdentifier(idRs.wasNull() ? null : identifierId, idRs.getString("scheme"),
+                idRs.getString("value"), idRs.getString("origin"), idRs.getString("note"), idRs.getObject("created_at", OffsetDateTime.class)));
+        }
+
         List<StopChildSummary> children = new ArrayList<>();
         if (!quay) {
             ps.getMoreResults();
@@ -392,7 +407,7 @@ public class StopViewerRepository {
             synthetic, wrapper, quay, parentId, path, attributes, sources, children, reviewedAt, deletedAt, disabledAt,
             firstSeen, lastSeen, kind, transportMode, otherModes,
             n == null ? Map.of() : n.names(), n == null ? null : n.defaultName(), n == null ? null : n.defaultLang(),
-            n == null ? null : n.nameReason(), sourceStation));
+            n == null ? null : n.nameReason(), sourceStation, identifiers));
     }
 
     /** "general > StopPlace [> quay]" met weergavenamen; path_ids/path_names zijn parallelle arrays (NULL = geen parent). */
@@ -749,6 +764,38 @@ public class StopViewerRepository {
         return jdbcTemplate.query("SELECT kind, uic, stop_place_ids, quay_ids FROM chb.uic_stop_place_conflict ORDER BY uic, kind",
             (rs, rowNum) -> new UicConflict(rs.getString("kind"), rs.getString("uic"), longArray(rs, "stop_place_ids"),
                 longArray(rs, "quay_ids")));
+    }
+
+    public List<IdentifierScheme> findIdentifierSchemes() {
+        return jdbcTemplate.query("SELECT scheme, level, value_regex, description FROM chb.identifier_scheme ORDER BY scheme",
+            (rs, rowNum) -> new IdentifierScheme(rs.getString("scheme"), rs.getString("level"), rs.getString("value_regex"),
+                rs.getString("description")));
+    }
+
+    /** chb.identifier_worklist (ndov V193, chb#31), plus de soort van de suggestie (een quay-suggestie: die van zijn StopPlace). */
+    public List<IdentifierWorklistItem> findIdentifierWorklist() {
+        String sql = """
+            SELECT w.scheme, w.value, w.source, w.name, w.lat::float8 AS lat, w.lon::float8 AS lon, w.last_requested_at, w.suggested_id, w.suggested_name,
+                   coalesce(s.stop_type, qs.stop_type) AS stop_type, coalesce(s.transport_mode, q.transport_mode) AS transport_mode,
+                   w.suggested_is_wrapper, w.suggested_distance_m::bigint AS suggested_distance_m
+            FROM chb.identifier_worklist w
+            LEFT JOIN chb.stop s ON s.id = w.suggested_id
+            LEFT JOIN chb.quay q ON q.id = w.suggested_id
+            LEFT JOIN chb.stop qs ON qs.id = q.stop_id
+            ORDER BY w.scheme, w.name, w.value, w.source
+            """;
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new IdentifierWorklistItem(rs.getString("scheme"), rs.getString("value"),
+            rs.getString("source"), rs.getString("name"), rs.getObject("lat", Double.class), rs.getObject("lon", Double.class),
+            rs.getObject("last_requested_at", OffsetDateTime.class), rs.getObject("suggested_id", Long.class),
+            rs.getString("suggested_name"), rs.getString("stop_type"), rs.getString("transport_mode"),
+            rs.getObject("suggested_is_wrapper", Boolean.class), rs.getObject("suggested_distance_m", Long.class)));
+    }
+
+    /** chb.identifier_conflict (ndov V193): hoort leeg te zijn. */
+    public List<IdentifierConflict> findIdentifierConflicts() {
+        return jdbcTemplate.query("SELECT scheme, value, object_ids, origins FROM chb.identifier_conflict ORDER BY scheme, value",
+            (rs, rowNum) -> new IdentifierConflict(rs.getString("scheme"), rs.getString("value"), longArray(rs, "object_ids"),
+                textArray(rs, "origins")));
     }
 
     private static List<Long> longArray(ResultSet rs, String column) throws SQLException {

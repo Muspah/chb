@@ -1,5 +1,6 @@
 package be.gtfsbe.chb.web;
 
+import be.gtfsbe.chb.dto.AddIdentifierRequest;
 import be.gtfsbe.chb.dto.AttributeUpsertRequest;
 import be.gtfsbe.chb.dto.CreateStopRequest;
 import be.gtfsbe.chb.dto.GroupStopsRequest;
@@ -139,6 +140,21 @@ public class StopEditController {
     public ResponseEntity<Void> promoteWrapper(@AuthenticationPrincipal OidcUser user, @PathVariable long id,
                                                 @RequestBody PromoteWrapperRequest request) {
         repository.promoteWrapper(CurrentUser.email(user), id, request.name());
+        return ResponseEntity.noContent().build();
+    }
+
+    // --- Externe identifiers (ndov V193, chb#31). UC008 (validatie) en 23505 (al elders gekoppeld) -> 400.
+
+    @PostMapping("/api/stops/{id}/identifiers")
+    public ResponseEntity<Map<String, Long>> addIdentifier(@AuthenticationPrincipal OidcUser user, @PathVariable long id,
+                                                           @RequestBody AddIdentifierRequest request) {
+        long identifierId = repository.addIdentifier(CurrentUser.email(user), id, request.scheme(), request.value(), request.note());
+        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of("id", identifierId));
+    }
+
+    @DeleteMapping("/api/identifiers/{identifierId}")
+    public ResponseEntity<Void> removeIdentifier(@AuthenticationPrincipal OidcUser user, @PathVariable long identifierId) {
+        repository.removeIdentifier(CurrentUser.email(user), identifierId);
         return ResponseEntity.noContent().build();
     }
 

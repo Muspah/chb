@@ -23,7 +23,8 @@ const state = {
   group: { active: false, pickedIds: [] },
   showOnlyUnreviewed: false, // "Kaart: enkel nog te bekijken"-toggle
   showDisabled: false, // "Toon uitgeschakelde haltes"-toggle
-  reviewCounts: { modeMismatches: 0, duplicateQuays: 0, uicConflicts: 0 }, // tellers op de rapportenknop
+  reviewCounts: { modeMismatches: 0, duplicateQuays: 0, uicConflicts: 0, identifierConflicts: 0 }, // tellers op de rapportenknop
+  identifierSchemes: null, // chb.identifier_scheme, eenmaal geladen (curator)
 };
 
 function getCookie(name) {
@@ -68,7 +69,9 @@ async function apiFetch(url, options = {}) {
     throw error;
   }
   const contentType = response.headers.get("content-type") || "";
-  return contentType.includes("application/json") ? response.json() : null;
+  if (contentType.includes("application/json")) return response.json();
+  const location = response.headers.get("Location");
+  return location ? { id: Number(location.split("/").pop()) } : null;
 }
 
 /**
@@ -1068,6 +1071,7 @@ function renderPanel(detail, history) {
       <dt>${escapeHtml(t("panel.synthetic"))}</dt><dd>${detail.isSynthetic ? escapeHtml(t("common.yes")) : escapeHtml(t("common.no"))}</dd>
     </dl>
     ${renderNamesSection(detail)}
+    ${renderIdentifiersSection(detail)}
     ${reviewSection}
     ${wrapperSection}
     ${moveSection}
@@ -1109,6 +1113,68 @@ function renderNamesSection(detail) {
       </dl>
       ${state.me.curator ? `<p class="hint-text">${escapeHtml(t("panel.namesEditHint"))}</p>` : ""}
     </section>`;
+}
+
+// chb#31, ndov V193: externe ids (UIC, DB EVA, DHID, ...). Curated zijn verwijderbaar, afgeleide (uit een feed) niet.
+function renderIdentifiersSection(detail) {
+  const ids = detail.identifiers || [];
+  const level = detail.isQuay ? "quay" : "stop_place";
+  const schemes = (state.identifierSchemes || []).filter((s) => s.level === level);
+  if (!ids.length && !(state.me.curator && schemes.length)) return "";
+  const rows = ids.map((i) => `
+    <tr>
+      <td>${escapeHtml(i.scheme)}</td>
+      <td>${escapeHtml(i.value)}</td>
+      <td><span class="badge ${i.origin === "derived" ? "badge-synthetic" : "badge-physical"}" title="${escapeHtml(i.note || "")}">${escapeHtml(t("identifiers.origin." + i.origin))}</span></td>
+      <td>${state.me.curator && i.id != null
+        ? `<button class="secondary identifier-delete" data-id="${i.id}" data-label="${escapeHtml(i.scheme + ":" + i.value)}">${escapeHtml(t("panel.attrDelete"))}</button>`
+        : ""}</td>
+    </tr>`).join("");
+  const form = state.me.curator && schemes.length ? `
+      <form class="inline-form" id="identifier-form">
+        <label>${escapeHtml(t("identifiers.scheme"))}
+          <select name="scheme">${schemes.map((s) => `<option value="${escapeHtml(s.scheme)}" title="${escapeHtml(s.description)}">${escapeHtml(s.scheme)}</option>`).join("")}</select>
+        </label>
+        <label>${escapeHtml(t("common.value"))}
+          <input name="value" required>
+        </label>
+        <label>${escapeHtml(t("identifiers.note"))}
+          <input name="note">
+        </label>
+        <button type="submit">${escapeHtml(t("identifiers.add"))}</button>
+        <span class="error-text" id="identifier-error"></span>
+      </form>` : "";
+  return `
+    <section>
+      <h3>${escapeHtml(t("identifiers.heading"))}</h3>
+      ${ids.length ? `<table><tbody>${rows}</tbody></table>` : `<p class="hint-text">${escapeHtml(t("identifiers.none"))}</p>`}
+      ${form}
+    </section>`;
+}
+
+/** Client-side voorcontrole met de regex van het schema; de database (UC008) blijft het echte vangnet. */
+function identifierError(schemeCode, value) {
+  const scheme = (state.identifierSchemes || []).find((s) => s.scheme === schemeCode);
+  if (!scheme) return null;
+  try {
+    if (!new RegExp(scheme.valueRegex).test(value)) return t("identifiers.badValue", { scheme: schemeCode, regex: scheme.valueRegex });
+  } catch (ignored) { /* PostgreSQL-regex die JS niet kent: laat de database oordelen */ }
+  return null;
+}
+
+async function addIdentifier(objectId, scheme, value, note) {
+  const error = identifierError(scheme, value);
+  if (error) throw new Error(error);
+  try {
+    await apiFetch("/api/stops/" + objectId + "/identifiers", { method: "POST", body: JSON.stringify({ scheme, value, note: note || null }) });
+  } catch (e) {
+    if (e.code === "23505") e.message = t("identifiers.taken", { id: `${scheme}:${value}` });
+    throw e;
+  }
+}
+
+async function loadIdentifierSchemes() {
+  if (state.me.curator && !state.identifierSchemes) state.identifierSchemes = await apiFetch("/api/review/identifier-schemes");
 }
 
 function attributeRow(stopId, key, value) {
@@ -1377,6 +1443,29 @@ function wirePanelActions(detail) {
     });
   }
 
+  document.querySelectorAll(".identifier-delete").forEach((btn) => {
+    btn.addEventListener("click", () => guarded(async () => {
+      if (!confirm(t("identifiers.deleteConfirm", { id: btn.dataset.label }))) return;
+      await apiFetch("/api/identifiers/" + btn.dataset.id, { method: "DELETE" });
+      await selectStop(detail.id);
+    }));
+  });
+  const identifierForm = document.getElementById("identifier-form");
+  if (identifierForm) {
+    identifierForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const errorEl = document.getElementById("identifier-error");
+      errorEl.textContent = "";
+      const f = identifierForm.elements;
+      try {
+        await addIdentifier(detail.id, f.scheme.value, f.value.value.trim(), f.note.value.trim());
+        await selectStop(detail.id);
+      } catch (e) {
+        showActionError(errorEl, e);
+      }
+    });
+  }
+
   const promoteBtn = document.getElementById("promote-btn");
   if (promoteBtn) {
     promoteBtn.addEventListener("click", () => openPromoteDialog(detail));
@@ -1452,72 +1541,76 @@ function startPicking(callback) {
 // --- Nieuwe groeperingsknoop --------------------------------------------------
 
 function wireCreateNode() {
-  document.getElementById("btn-new-node").addEventListener("click", () => {
-    showDialog(`
-      <h2>${escapeHtml(t("create.heading"))}</h2>
-      <form class="inline-form" id="create-form">
-        <label>${escapeHtml(t("common.name"))}
-          <input name="name" required>
-        </label>
-        <label>${escapeHtml(t("stopType.label"))} ${helpLink("stopType")}
-          <select name="stopType" required>${stopTypeOptionsHtml("onstreetBus", false)}</select>
-        </label>
-        <label>${escapeHtml(t("create.parentIdOptional"))}
-          <input name="parentId" type="number">
-        </label>
-        <button type="button" class="secondary" id="create-pick-parent">${escapeHtml(t("panel.pickParent"))}</button>
-        <label>${escapeHtml(t("create.latOptional"))}
-          <input name="lat" type="number" step="any">
-        </label>
-        <label>${escapeHtml(t("create.lonOptional"))}
-          <input name="lon" type="number" step="any">
-        </label>
-        <span class="error-text" id="create-error"></span>
-        <div class="dialog-actions">
-          <button type="button" class="secondary" id="create-cancel">${escapeHtml(t("common.cancel"))}</button>
-          <button type="submit">${escapeHtml(t("common.create"))}</button>
-        </div>
-      </form>
-    `);
-    const form = document.getElementById("create-form");
-    document.getElementById("create-cancel").addEventListener("click", closeDialog);
-    document.getElementById("create-pick-parent").addEventListener("click", () => {
-      startPicking((id) => { form.elements.parentId.value = id; });
-    });
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const errorEl = document.getElementById("create-error");
-      const baseBody = {
-        name: form.elements.name.value,
-        stopType: form.elements.stopType.value,
-        parentId: form.elements.parentId.value ? Number(form.elements.parentId.value) : null,
-        lat: form.elements.lat.value ? Number(form.elements.lat.value) : null,
-        lon: form.elements.lon.value ? Number(form.elements.lon.value) : null,
-      };
-      const submit = async (allowDuplicateName) => {
-        await apiFetch("/api/stops", {
-          method: "POST",
-          body: JSON.stringify(Object.assign({}, baseBody, { allowDuplicateName })),
-        });
-        closeDialog();
-        await refreshAfterEdit();
-      };
-      try {
-        await submit(false);
-      } catch (e) {
-        if (e.code === "UC001") {
-          if (await confirmDuplicateName(baseBody.name)) {
-            try {
-              await submit(true);
-            } catch (e2) {
-              showError(e2);
-            }
+  document.getElementById("btn-new-node").addEventListener("click", () => openCreateDialog());
+}
+
+/** prefill: {name, stopType, lat, lon}; onCreated(id) na een geslaagde aanmaak (i.p.v. enkel sluiten). */
+function openCreateDialog(prefill = {}, onCreated = null) {
+  showDialog(`
+    <h2>${escapeHtml(t("create.heading"))}</h2>
+    <form class="inline-form" id="create-form">
+      <label>${escapeHtml(t("common.name"))}
+        <input name="name" value="${escapeHtml(prefill.name || "")}" required>
+      </label>
+      <label>${escapeHtml(t("stopType.label"))} ${helpLink("stopType")}
+        <select name="stopType" required>${stopTypeOptionsHtml(prefill.stopType || "onstreetBus", false)}</select>
+      </label>
+      <label>${escapeHtml(t("create.parentIdOptional"))}
+        <input name="parentId" type="number">
+      </label>
+      <button type="button" class="secondary" id="create-pick-parent">${escapeHtml(t("panel.pickParent"))}</button>
+      <label>${escapeHtml(t("create.latOptional"))}
+        <input name="lat" type="number" step="any" value="${prefill.lat ?? ""}">
+      </label>
+      <label>${escapeHtml(t("create.lonOptional"))}
+        <input name="lon" type="number" step="any" value="${prefill.lon ?? ""}">
+      </label>
+      <span class="error-text" id="create-error"></span>
+      <div class="dialog-actions">
+        <button type="button" class="secondary" id="create-cancel">${escapeHtml(t("common.cancel"))}</button>
+        <button type="submit">${escapeHtml(t("common.create"))}</button>
+      </div>
+    </form>
+  `);
+  const form = document.getElementById("create-form");
+  document.getElementById("create-cancel").addEventListener("click", closeDialog);
+  document.getElementById("create-pick-parent").addEventListener("click", () => {
+    startPicking((id) => { form.elements.parentId.value = id; });
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const errorEl = document.getElementById("create-error");
+    const baseBody = {
+      name: form.elements.name.value,
+      stopType: form.elements.stopType.value,
+      parentId: form.elements.parentId.value ? Number(form.elements.parentId.value) : null,
+      lat: form.elements.lat.value ? Number(form.elements.lat.value) : null,
+      lon: form.elements.lon.value ? Number(form.elements.lon.value) : null,
+    };
+    const submit = async (allowDuplicateName) => {
+      const created = await apiFetch("/api/stops", {
+        method: "POST",
+        body: JSON.stringify(Object.assign({}, baseBody, { allowDuplicateName })),
+      });
+      closeDialog();
+      await refreshAfterEdit();
+      if (onCreated && created) await onCreated(created.id);
+    };
+    try {
+      await submit(false);
+    } catch (e) {
+      if (e.code === "UC001") {
+        if (await confirmDuplicateName(baseBody.name)) {
+          try {
+            await submit(true);
+          } catch (e2) {
+            showError(e2);
           }
-        } else {
-          showActionError(errorEl, e);
         }
+      } else {
+        showActionError(errorEl, e);
       }
-    });
+    }
   });
 }
 
@@ -1881,6 +1974,7 @@ function wireReport() {
   document.getElementById("btn-duplicate-quays").addEventListener("click", openDuplicateQuaysDialog);
   document.getElementById("btn-group-candidates").addEventListener("click", openGroupCandidatesDialog);
   document.getElementById("btn-rail-uic").addEventListener("click", openRailUicDialog);
+  document.getElementById("btn-identifiers").addEventListener("click", openIdentifiersDialog);
   // Dicht bij een klik op een rapport of ernaast, en met Escape.
   const menu = document.getElementById("reports-menu");
   document.addEventListener("click", (event) => {
@@ -2334,6 +2428,14 @@ function refreshReviewCounts() {
   refreshModeMismatches().catch(console.error);
   refreshDuplicateQuays().catch(console.error);
   refreshUicConflicts().catch(console.error);
+  refreshIdentifierConflicts().catch(console.error);
+}
+
+async function refreshIdentifierConflicts() {
+  const rows = await apiFetch("/api/review/identifier-conflicts");
+  state.reviewCounts.identifierConflicts = rows.length;
+  renderReviewCounts();
+  return rows;
 }
 
 async function refreshModeMismatches() {
@@ -2359,7 +2461,7 @@ async function refreshUicConflicts() {
 
 function renderReviewCounts() {
   const counts = state.reviewCounts;
-  const total = counts.modeMismatches + counts.duplicateQuays + counts.uicConflicts;
+  const total = counts.modeMismatches + counts.duplicateQuays + counts.uicConflicts + counts.identifierConflicts;
   for (const badge of document.querySelectorAll(".review-count")) {
     const n = badge.dataset.count === "total" ? total : counts[badge.dataset.count];
     badge.textContent = n;
@@ -2371,6 +2473,7 @@ function renderReviewCounts() {
   if (counts.modeMismatches) parts.push(t("modeMismatches.count", { n: counts.modeMismatches }));
   if (counts.duplicateQuays) parts.push(t("duplicateQuays.count", { n: counts.duplicateQuays }));
   if (counts.uicConflicts) parts.push(t("railUic.count", { n: counts.uicConflicts }));
+  if (counts.identifierConflicts) parts.push(t("identifiers.count", { n: counts.identifierConflicts }));
   const label = parts.length ? `${reports} (${parts.join(", ")})` : reports;
   const summary = document.querySelector("#reports-menu summary");
   summary.setAttribute("aria-label", label);
@@ -2481,6 +2584,85 @@ async function openRailUicDialog() {
     const target = w.suggestedStopPlaceId ? t("railUic.suggested", { id: w.suggestedStopPlaceId }) : t("railUic.noTarget");
     list.appendChild(item(w.name, t("railUic.row", { uic: w.uic, n: w.quayIds.length, target }),
       w.suggestedStopPlaceId ?? w.wrapperIds[0]));
+  }
+}
+
+// chb#31, ndov V193: externe ids. Conflicten horen leeg te zijn; de werklijst = ids die een importer nodig
+// heeft en nog niemand koppelde, met de dichtstbijzijnde StopPlace als suggestie (en zijn soort: kan een bushalte zijn).
+const RAIL_SCHEMES = ["uic", "db_eva", "ns_iff"];
+
+async function openIdentifiersDialog() {
+  showDialog(`
+    <h2>${escapeHtml(t("toolbar.identifiers"))}</h2>
+    <p class="hint-text">${escapeHtml(t("identifiers.hint"))}</p>
+    <h3>${escapeHtml(t("railUic.conflictsHeading"))}</h3>
+    <ul id="identifier-conflicts"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <h3 id="identifier-worklist-heading"></h3>
+    <span class="error-text" id="identifier-worklist-error"></span>
+    <ul id="names-list"><li class="report-item">${escapeHtml(t("common.loading"))}</li></ul>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="identifiers-close">${escapeHtml(t("common.close"))}</button>
+    </div>
+  `);
+  document.getElementById("identifiers-close").addEventListener("click", closeDialog);
+  const [conflicts, worklist] = await Promise.all([refreshIdentifierConflicts(), apiFetch("/api/review/identifier-worklist")]);
+  const conflictList = document.getElementById("identifier-conflicts");
+  const list = document.getElementById("names-list");
+  if (!conflictList || !list) {
+    return;
+  }
+  conflictList.innerHTML = conflicts.length ? "" : `<li class="report-item">${escapeHtml(t("railUic.noConflicts"))}</li>`;
+  for (const c of conflicts) {
+    const li = document.createElement("li");
+    li.className = "report-item";
+    li.innerHTML = `${escapeHtml(c.scheme + ":" + c.value)}<div class="report-item-sub">${escapeHtml(t("identifiers.conflictRow",
+      { ids: c.objectIds.join(", "), origins: c.origins.join(", ") }))}</div>`;
+    li.addEventListener("click", () => {
+      closeDialog();
+      selectStop(c.objectIds[0]);
+    });
+    conflictList.appendChild(li);
+  }
+  document.getElementById("identifier-worklist-heading").textContent = t("identifiers.worklistHeading", { n: worklist.length });
+  list.innerHTML = worklist.length ? "" : `<li class="report-item">${escapeHtml(t("identifiers.worklistNone"))}</li>`;
+  const link = async (w, objectId) => {
+    await addIdentifier(objectId, w.scheme, w.value, `worklist ${w.source}`);
+    closeDialog();
+    await selectStop(objectId);
+  };
+  for (const w of worklist) {
+    const suggestion = w.suggestedId == null ? t("identifiers.noSuggestion") : t("identifiers.suggestion", {
+      name: w.suggestedName, id: w.suggestedId, m: w.suggestedDistanceM,
+      kind: [w.suggestedStopType && stopTypeLabel(w.suggestedStopType), w.suggestedIsWrapper && t("kind.wrapper")].filter(Boolean).join(", ") || "-",
+    });
+    const li = document.createElement("li");
+    li.className = "report-item";
+    li.innerHTML = `${escapeHtml(w.name || w.value)}
+      <div class="report-item-sub">${escapeHtml(`${w.scheme}:${w.value} · ${w.source}`)}</div>
+      <div class="report-item-sub">${escapeHtml(suggestion)} ${w.suggestedTransportMode ? modeBadge(w.suggestedTransportMode) : ""}</div>
+      <div class="dialog-actions">
+        ${w.suggestedId != null ? `<button type="button" class="wl-link">${escapeHtml(t("identifiers.linkSuggestion"))}</button>` : ""}
+        <button type="button" class="secondary wl-pick">${escapeHtml(t("identifiers.linkOther"))}</button>
+        <button type="button" class="secondary wl-create">${escapeHtml(t("identifiers.createNew"))}</button>
+      </div>`;
+    // Klik op de rij (niet op een knop): de suggestie, of de locatie van de feed, op de kaart.
+    li.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      closeDialog();
+      if (w.suggestedId != null) selectStop(w.suggestedId);
+      else if (w.lat != null) state.map.easeTo({ center: [w.lon, w.lat], zoom: mapZoom(DETAIL_ZOOM) });
+    });
+    li.querySelector(".wl-link")?.addEventListener("click", () => link(w, w.suggestedId)
+      .catch((e) => showActionError(document.getElementById("identifier-worklist-error"), e)));
+    li.querySelector(".wl-pick").addEventListener("click", () => {
+      closeDialog();
+      if (w.lat != null) state.map.easeTo({ center: [w.lon, w.lat], zoom: mapZoom(DETAIL_ZOOM) });
+      startPicking((id) => guarded(() => link(w, id)));
+    });
+    li.querySelector(".wl-create").addEventListener("click", () => openCreateDialog(
+      { name: w.name, lat: w.lat, lon: w.lon, stopType: RAIL_SCHEMES.includes(w.scheme) ? "railStation" : "onstreetBus" },
+      (id) => guarded(() => link(w, id))));
+    list.appendChild(li);
   }
 }
 
@@ -2654,7 +2836,7 @@ async function init() {
   state.showOnlyUnreviewed = initialUnreviewedToggle();
   state.showDisabled = initialDisabledToggle();
   // Kaart laden ook als een van beide faalt: die heeft ze niet nodig (zonder /api/me = anoniem).
-  await Promise.all([loadMe().catch(showError), loadStopPlaceTypes().catch(showError)]);
+  await Promise.all([loadMe().then(loadIdentifierSchemes).catch(showError), loadStopPlaceTypes().catch(showError)]);
   applyUnreviewedToggleUi();
   applyDisabledToggleUi();
   await loadStops();

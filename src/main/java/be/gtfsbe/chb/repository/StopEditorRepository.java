@@ -108,6 +108,16 @@ public class StopEditorRepository {
         call(currentUser, "SELECT chb.promote_wrapper(?, ?)", id, name);
     }
 
+    /** Externe id (ndov V193, chb#31) aan een StopPlace of Quay; regex, niveau en uniciteit bewaakt de database. */
+    public long addIdentifier(String currentUser, long objectId, String scheme, String value, String note) {
+        return runner.runAs(currentUser, jdbc -> jdbc.queryForObject(
+            "SELECT chb.add_identifier(?, ?, ?, ?)", Long.class, scheme, value, objectId, note));
+    }
+
+    public void removeIdentifier(String currentUser, long identifierId) {
+        call(currentUser, "SELECT chb.remove_identifier(?)", identifierId);
+    }
+
     private void call(String currentUser, String sql, Object... args) {
         runner.runAs(currentUser, jdbc -> {
             jdbc.query(sql, rs -> { }, args);

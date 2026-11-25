@@ -4,6 +4,9 @@ import be.gtfsbe.chb.dto.BrusselsNames;
 import be.gtfsbe.chb.dto.DuplicateNameGroup;
 import be.gtfsbe.chb.dto.GroupCandidate;
 import be.gtfsbe.chb.dto.DuplicateQuay;
+import be.gtfsbe.chb.dto.IdentifierConflict;
+import be.gtfsbe.chb.dto.IdentifierScheme;
+import be.gtfsbe.chb.dto.IdentifierWorklistItem;
 import be.gtfsbe.chb.dto.RailUicWorklistItem;
 import be.gtfsbe.chb.dto.UicConflict;
 import be.gtfsbe.chb.dto.ModeMismatch;
@@ -177,6 +180,21 @@ public class PublicStopController {
     @GetMapping("/api/review/uic-conflicts")
     public List<UicConflict> uicConflicts() {
         return repository.findUicConflicts();
+    }
+
+    @GetMapping("/api/review/identifier-schemes")
+    public List<IdentifierScheme> identifierSchemes() {
+        return repository.findIdentifierSchemes();
+    }
+
+    @GetMapping("/api/review/identifier-worklist")
+    public List<IdentifierWorklistItem> identifierWorklist() {
+        return repository.findIdentifierWorklist();
+    }
+
+    @GetMapping("/api/review/identifier-conflicts")
+    public List<IdentifierConflict> identifierConflicts() {
+        return repository.findIdentifierConflicts();
     }
 
     @GetMapping("/api/review/feeds")

@@ -38,6 +38,8 @@ public record StopDetail(
     String defaultLang,
     String nameReason,
     /** Attribuut _source_station ({@code <schema>:<station>}): automatisch gegroepeerd uit het bronstation (ndov V143). */
-    String sourceStation
+    String sourceStation,
+    /** chb.identifier_resolved (ndov V193, chb#31): externe ids van dit object, curated + afgeleid. */
+    List<StopIdentifier> identifiers
 ) {
 }
