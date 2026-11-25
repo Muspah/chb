@@ -943,6 +943,12 @@ function dominantMode(modes) {
   return [...new Set(modes.filter(Boolean))].sort((a, b) => rank(a) - rank(b))[0] || null;
 }
 
+// Zelfde voorwaarde als chb.stop_place_mode_mismatch (ndov V154): monomodaal zonder modus, een live quay wel.
+function monomodalModeGap(d) {
+  return d.kind === "monomodal" && !d.disabledAt && !d.transportMode
+    && d.children.some((c) => c.isQuay && !c.disabledAt && c.transportMode);
+}
+
 function modesText(d) {
   if (!d.transportMode) return "-";
   return d.otherTransportModes?.length ? `${d.transportMode} (+ ${d.otherTransportModes.join(", ")})` : d.transportMode;
@@ -1059,6 +1065,7 @@ function renderPanel(detail, history) {
     <div class="path">${parentLine}</div>
     <div class="badge-row">${typeBadge}${kindBadge(detail.kind)}${autoBadge}${reviewBadge}${disabledBadge}</div>
     ${detail.kind === "general" && !detail.transportMode ? `<p class="error-text">${escapeHtml(t("panel.generalNoMode"))}</p>` : ""}
+    ${monomodalModeGap(detail) ? `<p class="error-text">${escapeHtml(t("panel.monomodalNoMode"))} <a href="#" id="mode-mismatch-link">${escapeHtml(t("toolbar.modeMismatches"))}</a></p>` : ""}
     ${detail.kind === "general" && detail.transportMode && !detail.otherTransportModes?.length ? `<p class="error-text">${escapeHtml(t("panel.generalSingleMode"))} ${helpLink("general")}</p>` : ""}
     <dl>
       <dt>${escapeHtml(t("panel.transportMode"))}</dt><dd>${escapeHtml(modesText(detail))}</dd>
@@ -1277,6 +1284,10 @@ function wirePanelActions(detail) {
     });
   });
 
+  document.getElementById("mode-mismatch-link")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    openModeMismatchesDialog().catch(console.error);
+  });
   const reviewBtn = document.getElementById("review-btn");
   if (reviewBtn) {
     reviewBtn.addEventListener("click", () => guarded(async () => {
