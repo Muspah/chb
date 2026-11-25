@@ -4,8 +4,13 @@ import be.gtfsbe.chb.dto.CreateStopRequest;
 import be.gtfsbe.chb.dto.GroupStopsRequest;
 import be.gtfsbe.chb.dto.UpdateStopRequest;
 import be.gtfsbe.chb.service.EditorTransactionRunner;
+import be.gtfsbe.chb.web.CuratorActionException;
+import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -25,6 +30,13 @@ import java.util.stream.Collectors;
 @Repository
 public class StopEditorRepository {
 
+    /** Eentalige gebieden: daar is stop.name van een general de naam in de gebiedstaal. */
+    private static final Set<String> REGION_LANGUAGES = Set.of("nl", "fr", "de");
+
+    /** Zoals StopNames.UNUSABLE_REASONS in ndov: redenen waarop de exports hard falen. */
+    private static final Set<String> UNUSABLE_REASONS = Set.of("bare_code", "general_region_unknown",
+        "general_no_language", "general_no_region_language", "bru_disagree");
+
     /** Zelfde sleutelpatroon als de curated-CTE's in chb.quay_names / chb.stop_names. */
     private static final Pattern NAME_KEY = Pattern.compile("^name_([a-z]{2,3})$");
 
@@ -43,8 +55,16 @@ public class StopEditorRepository {
     }
 
     public void updateStop(String currentUser, long id, UpdateStopRequest r) {
-        call(currentUser, "SELECT chb.update_stop(?, ?, ?, ?, ?::bigint)",
-            id, r.name(), r.stopType(), r.publicCode(), r.parentId());
+        runner.runAs(currentUser, jdbc -> {
+            String oldName = jdbc.query("SELECT name FROM chb.stop WHERE id = ? AND kind = 'general'",
+                rs -> rs.next() ? rs.getString(1) : null, id);
+            jdbc.query("SELECT chb.update_stop(?, ?, ?, ?, ?::bigint)", rs -> { },
+                id, r.name(), r.stopType(), r.publicCode(), r.parentId());
+            if (oldName != null && r.name() != null && !oldName.equals(r.name().strip())) {
+                ensureGeneralName(jdbc, id, r.name().strip());
+            }
+            return null;
+        });
     }
 
     public void setLocation(String currentUser, long id, double lat, double lon) {
@@ -86,9 +106,45 @@ public class StopEditorRepository {
         // ("null" in het literal) wordt door de database als UC008 geweigerd.
         String ids = r.stopIds() == null ? null
             : r.stopIds().stream().map(String::valueOf).collect(Collectors.joining(",", "{", "}"));
-        return runner.runAs(currentUser, jdbc -> jdbc.queryForObject(
-            "SELECT chb.group_stops(?, ?, ?::numeric, ?::numeric, ?::bigint[], ?)", Long.class,
-            r.name(), r.stopType(), r.lat(), r.lon(), ids, r.allowDuplicateName()));
+        return runner.runAs(currentUser, jdbc -> {
+            long id = jdbc.queryForObject(
+                "SELECT chb.group_stops(?, ?, ?::numeric, ?::numeric, ?::bigint[], ?)", Long.class,
+                r.name(), r.stopType(), r.lat(), r.lon(), ids, r.allowDuplicateName());
+            if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT kind = 'general' FROM chb.stop WHERE id = ?", Boolean.class, id))) {
+                ensureGeneralName(jdbc, id, r.name().strip());
+            }
+            return id;
+        });
+    }
+
+    /**
+     * Issue #28: een general krijgt zijn naam per taal niet uit stop.name; zonder name_<taal> geeft
+     * chb.stop_names general_no_language en weigert de volgende export (StopNames, ndov). Na aanmaken of
+     * hernoemen, in dezelfde transactie: in een eentalig gebied (nl/fr/de) wordt name_<gebiedstaal> de nieuwe
+     * naam. Elders (bru: fr én nl, dg, gemengd) kan de viewer die niet raden; geeft stop_names dan een reden
+     * waarop de export faalt, dan wordt de actie geweigerd (rollback) met dezelfde boodschap.
+     */
+    private static void ensureGeneralName(JdbcTemplate jdbc, long id, String name) {
+        // ponytail: chb.stop_names is een view over alle haltes (~6 s ook voor één id); goed genoeg voor groeperen/hernoemen.
+        Map<String, Object> n = jdbc.queryForMap(
+            "SELECT region, name_reason, default_name FROM chb.stop_names WHERE stop_id = ?", id);
+        String region = (String) n.get("region");
+        if (REGION_LANGUAGES.contains(region)) {
+            jdbc.query("SELECT chb.set_attribute(?, ?, ?)", rs -> { }, id, "name_" + region, name);
+            return;
+        }
+        String reason = (String) n.get("name_reason");
+        String defaultName = (String) n.get("default_name");
+        boolean unusable = defaultName == null || defaultName.isBlank() || (reason != null && UNUSABLE_REASONS.contains(reason));
+        boolean hasLiveChildren = Boolean.TRUE.equals(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM chb.stop WHERE parent_id = ? AND merged_into_id IS NULL AND disabled_at IS NULL)",
+            Boolean.class, id));
+        if (unusable && hasLiveChildren) {
+            throw new CuratorActionException(HttpStatus.BAD_REQUEST, "UC008",
+                "Geen bruikbare standaardnaam voor deze general (" + reason + "): de export zou weigeren.",
+                "Taalgebied " + (region == null ? "onbekend" : region) + ". Geef de kinderen eerst dezelfde name_<taal>"
+                    + " (Brussel: name_fr én name_nl) en probeer dan opnieuw.", null, null);
+        }
     }
 
     public void recomputeLocation(String currentUser, long id) {
