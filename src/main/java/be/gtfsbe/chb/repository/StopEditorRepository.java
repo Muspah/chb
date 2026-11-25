@@ -125,21 +125,30 @@ public class StopEditorRepository {
      * waarop de export faalt, dan wordt de actie geweigerd (rollback) met dezelfde boodschap.
      */
     private static void ensureGeneralName(JdbcTemplate jdbc, long id, String name) {
-        // ponytail: chb.stop_names is een view over alle haltes (~6 s ook voor één id); goed genoeg voor groeperen/hernoemen.
-        Map<String, Object> n = jdbc.queryForMap(
-            "SELECT region, name_reason, default_name FROM chb.stop_names WHERE stop_id = ?", id);
-        String region = (String) n.get("region");
+        // Taalgebied zoals quay_ctx in chb.stop_names, maar alleen over de quays van de kinderen: ms i.p.v. de hele view.
+        String region = jdbc.queryForObject("""
+            SELECT CASE WHEN count(DISTINCT r) > 1 THEN 'mixed' ELSE min(r) END
+            FROM (SELECT chb.language_region(m.value::jsonb) AS r
+                  FROM chb.stop c
+                  JOIN chb.quay q ON q.stop_id = c.id AND q.merged_into_id IS NULL AND q.disabled_at IS NULL
+                  LEFT JOIN chb.quay_attribute m ON m.quay_id = q.id AND m.key = '_resolved_meta'
+                  WHERE c.parent_id = ? AND c.merged_into_id IS NULL AND c.disabled_at IS NULL) x""", String.class, id);
         if (REGION_LANGUAGES.contains(region)) {
             jdbc.query("SELECT chb.set_attribute(?, ?, ?)", rs -> { }, id, "name_" + region, name);
             return;
         }
+        if (!Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM chb.stop WHERE parent_id = ? AND merged_into_id IS NULL AND disabled_at IS NULL)",
+                Boolean.class, id))) {
+            return;  // zonder live kinderen slaat de export hem over
+        }
+        // ponytail: hier wel de volledige view (~6 s), alleen buiten nl/fr/de; namen-overeenkomst niet dupliceren.
+        Map<String, Object> n = jdbc.queryForMap(
+            "SELECT name_reason, default_name FROM chb.stop_names WHERE stop_id = ?", id);
         String reason = (String) n.get("name_reason");
         String defaultName = (String) n.get("default_name");
         boolean unusable = defaultName == null || defaultName.isBlank() || (reason != null && UNUSABLE_REASONS.contains(reason));
-        boolean hasLiveChildren = Boolean.TRUE.equals(jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM chb.stop WHERE parent_id = ? AND merged_into_id IS NULL AND disabled_at IS NULL)",
-            Boolean.class, id));
-        if (unusable && hasLiveChildren) {
+        if (unusable) {
             throw new CuratorActionException(HttpStatus.BAD_REQUEST, "UC008",
                 "Geen bruikbare standaardnaam voor deze general (" + reason + "): de export zou weigeren.",
                 "Taalgebied " + (region == null ? "onbekend" : region) + ". Geef de kinderen eerst dezelfde name_<taal>"
